@@ -10,7 +10,6 @@ on:
   workflow_dispatch:
 
 env:
-  SCHEME: WindowSwitcher
   PRODUCT_NAME: WindowSwitcher
   MACOS_DEPLOYMENT_TARGET: '14.0'
 
@@ -31,38 +30,46 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      - name: Resolve Swift Package Dependencies
+      - name: Show project structure
         run: |
-          xcodebuild -resolvePackageDependencies \
-            -project WindowSwitcher.xcodeproj \
-            -scheme ${{ env.SCHEME }}
+          echo "=== Project Structure ==="
+          ls -la
+          echo "=== Package.swift ==="
+          cat Package.swift
 
-      - name: Build for Release
+      - name: Build with Swift Package Manager
         run: |
-          xcodebuild clean build \
-            -project WindowSwitcher.xcodeproj \
-            -scheme ${{ env.SCHEME }} \
-            -configuration Release \
-            -derivedDataPath build \
-            CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            MACOSX_DEPLOYMENT_TARGET=${{ env.MACOS_DEPLOYMENT_TARGET }}
+          swift build -c release
 
-      - name: Create App Bundle
+      - name: Create App Bundle Structure
         run: |
-          mkdir -p artifacts
-          cp -R "build/Build/Products/Release/${{ env.PRODUCT_NAME }}.app" artifacts/
+          mkdir -p "artifacts/${{ env.PRODUCT_NAME }}.app/Contents/MacOS"
+          mkdir -p "artifacts/${{ env.PRODUCT_NAME }}.app/Contents/Resources"
+
+          # Copy executable
+          cp ".build/release/${{ env.PRODUCT_NAME }}" "artifacts/${{ env.PRODUCT_NAME }}.app/Contents/MacOS/"
+
+          # Copy Info.plist
+          cp "WindowSwitcher/Resources/Info.plist" "artifacts/${{ env.PRODUCT_NAME }}.app/Contents/"
+
+          # Create PkgInfo
+          echo -n "APPL????" > "artifacts/${{ env.PRODUCT_NAME }}.app/Contents/PkgInfo"
+
+          # Update Info.plist with correct executable name
+          /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable ${{ env.PRODUCT_NAME }}" "artifacts/${{ env.PRODUCT_NAME }}.app/Contents/Info.plist" || true
+
+      - name: Sign App (Ad-hoc)
+        run: |
+          codesign --force --deep --sign - "artifacts/${{ env.PRODUCT_NAME }}.app"
 
       - name: Create DMG
         run: |
           # Install create-dmg
-          brew install create-dmg
+          brew install create-dmg || true
 
           # Create DMG
           create-dmg \
             --volname "${{ env.PRODUCT_NAME }}" \
-            --volicon "artifacts/${{ env.PRODUCT_NAME }}.app/Contents/Resources/AppIcon.icns" \
             --window-pos 200 120 \
             --window-size 600 400 \
             --icon-size 100 \
