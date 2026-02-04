@@ -48,7 +48,35 @@ struct SwitcherWindow: View {
         .onAppear {
             viewModel.refreshWindows()
         }
-        .handlesKeyboardShortcuts()
+        // Escape key
+        .onKeyPress(.escape) {
+            handleEscape()
+            return .handled
+        }
+        // Arrow keys
+        .onKeyPress(.upArrow) {
+            viewModel.selectPrevious()
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            viewModel.selectNext()
+            return .handled
+        }
+        // Enter key
+        .onKeyPress(.return) {
+            handleReturn()
+            return .handled
+        }
+        // Cmd+1 through Cmd+9
+        .onKeyPress(keys: ["1", "2", "3", "4", "5", "6", "7", "8", "9"], phases: .down) { press in
+            if press.modifiers.contains(.command) {
+                if let number = Int(press.characters), number >= 1 && number <= 9 {
+                    handleCommandNumber(number)
+                    return .handled
+                }
+            }
+            return .ignored
+        }
     }
     
     // MARK: - Subviews
@@ -99,41 +127,6 @@ struct SwitcherWindow: View {
     private var windowBorder: some View {
         RoundedRectangle(cornerRadius: 14)
             .stroke(Color.white.opacity(0.15), lineWidth: 1)
-    }
-    
-    // MARK: - Keyboard Handling
-    
-    private func handlesKeyboardShortcuts() -> some View {
-        self
-            // Escape key
-            .onKeyPress(.escape) {
-                handleEscape()
-                return .handled
-            }
-            // Arrow keys
-            .onKeyPress(.upArrow) {
-                viewModel.selectPrevious()
-                return .handled
-            }
-            .onKeyPress(.downArrow) {
-                viewModel.selectNext()
-                return .handled
-            }
-            // Enter key
-            .onKeyPress(.return) {
-                handleReturn()
-                return .handled
-            }
-            // Cmd+1 through Cmd+9
-            .onKeyPress(keys: ["1", "2", "3", "4", "5", "6", "7", "8", "9"], phases: .down) { press in
-                if press.modifiers.contains(.command) {
-                    if let number = Int(press.characters), number >= 1 && number <= 9 {
-                        handleCommandNumber(number)
-                        return .handled
-                    }
-                }
-                return .ignored
-            }
     }
     
     // MARK: - Key Handlers

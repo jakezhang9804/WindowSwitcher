@@ -85,7 +85,7 @@ class WindowService {
     func activateWindow(_ window: WindowInfo) {
         // First, activate the application
         if let app = NSRunningApplication(processIdentifier: window.appPID) {
-            app.activate(options: [.activateIgnoringOtherApps])
+            app.activate()
         }
         
         // Then, raise the specific window using Accessibility API
