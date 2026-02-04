@@ -1,7 +1,7 @@
 import AppKit
 
 /// Represents information about a window
-struct WindowInfo: Identifiable, Equatable {
+struct WindowInfo: Identifiable, Equatable, Hashable {
     
     // MARK: - Properties
     
@@ -28,11 +28,9 @@ struct WindowInfo: Identifiable, Equatable {
     static func == (lhs: WindowInfo, rhs: WindowInfo) -> Bool {
         lhs.id == rhs.id
     }
-}
-
-// MARK: - Hashable
-
-extension WindowInfo: Hashable {
+    
+    // MARK: - Hashable
+    
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }

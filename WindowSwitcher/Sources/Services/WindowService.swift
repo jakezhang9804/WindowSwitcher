@@ -17,9 +17,25 @@ class WindowService {
         
         // Get running applications for icon lookup
         let runningApps = NSWorkspace.shared.runningApplications
-        let appsByPID = Dictionary(uniqueKeysWithValues: runningApps.map { ($0.processIdentifier, $0) })
+        let appsByPID = Dictionary(uniqueKeysWithValues: runningApps.compactMap { app -> (pid_t, NSRunningApplication)? in
+            return (app.processIdentifier, app)
+        })
+        
+        // Current app bundle identifier to exclude self
+        let currentBundleID = Bundle.main.bundleIdentifier
         
         for windowDict in windowList {
+            // Get owner PID first to check if we should skip
+            guard let ownerPID = windowDict[kCGWindowOwnerPID as String] as? pid_t else {
+                continue
+            }
+            
+            // Skip our own windows
+            if let app = appsByPID[ownerPID],
+               app.bundleIdentifier == currentBundleID {
+                continue
+            }
+            
             // Skip windows without names or with empty names
             guard let windowName = windowDict[kCGWindowName as String] as? String,
                   !windowName.isEmpty else {
@@ -28,15 +44,23 @@ class WindowService {
             
             // Get window properties
             guard let windowID = windowDict[kCGWindowNumber as String] as? CGWindowID,
-                  let ownerPID = windowDict[kCGWindowOwnerPID as String] as? pid_t,
                   let ownerName = windowDict[kCGWindowOwnerName as String] as? String else {
                 continue
             }
             
-            // Skip system windows
+            // Skip system windows (layer != 0)
             let layer = windowDict[kCGWindowLayer as String] as? Int ?? 0
             if layer != 0 {
                 continue
+            }
+            
+            // Skip very small windows (likely UI elements)
+            if let bounds = windowDict[kCGWindowBounds as String] as? [String: CGFloat] {
+                let width = bounds["Width"] ?? 0
+                let height = bounds["Height"] ?? 0
+                if width < 100 || height < 100 {
+                    continue
+                }
             }
             
             // Get app icon
@@ -65,6 +89,12 @@ class WindowService {
         }
         
         // Then, raise the specific window using Accessibility API
+        raiseWindow(window)
+    }
+    
+    // MARK: - Private Methods
+    
+    private func raiseWindow(_ window: WindowInfo) {
         let appElement = AXUIElementCreateApplication(window.appPID)
         
         var windowsRef: CFTypeRef?
@@ -81,7 +111,11 @@ class WindowService {
             AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
             
             if let title = titleRef as? String, title == window.title {
+                // Raise the window
                 AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
+                
+                // Also try to focus it
+                AXUIElementSetAttributeValue(axWindow, kAXMainAttribute as CFString, true as CFTypeRef)
                 break
             }
         }

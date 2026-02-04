@@ -1,87 +1,167 @@
 import SwiftUI
+import AppKit
 
 struct SwitcherWindow: View {
     @StateObject private var viewModel: SwitcherViewModel
     let onDismiss: () -> Void
+    
+    // MARK: - Constants
+    
+    private let windowWidth: CGFloat = 640
+    private let minHeight: CGFloat = 120
+    private let maxHeight: CGFloat = 500
+    private let itemHeight: CGFloat = 58
+    private let headerHeight: CGFloat = 60
     
     init(windowService: WindowService, onDismiss: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: SwitcherViewModel(windowService: windowService))
         self.onDismiss = onDismiss
     }
     
+    // MARK: - Computed Properties
+    
+    private var dynamicHeight: CGFloat {
+        let contentHeight = CGFloat(viewModel.filteredWindows.count) * itemHeight + headerHeight + 16
+        return min(max(contentHeight, minHeight), maxHeight)
+    }
+    
+    // MARK: - Body
+    
     var body: some View {
         VStack(spacing: 0) {
             // Search Field
-            SearchField(
-                text: $viewModel.searchText,
-                placeholder: "Search \(viewModel.totalCount) windows"
-            )
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            searchSection
             
+            // Divider
             Divider()
-                .opacity(0.5)
+                .background(Color.primary.opacity(0.1))
             
-            // Results List
-            if viewModel.filteredWindows.isEmpty {
-                emptyStateView
-            } else {
-                ResultsList(
-                    windows: viewModel.filteredWindows,
-                    selectedIndex: $viewModel.selectedIndex,
-                    onSelect: { window in
-                        viewModel.activateWindow(window)
-                        onDismiss()
-                    }
-                )
-            }
+            // Results List or Empty State
+            resultsSection
         }
-        .frame(width: 600, height: 400)
-        .background(VisualEffectView(material: .hudWindow, blendingMode: .behindWindow))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.white.opacity(0.1), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.3), radius: 20, x: 0, y: 10)
+        .frame(width: windowWidth, height: dynamicHeight)
+        .background(windowBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(windowBorder)
+        .shadow(color: .black.opacity(0.25), radius: 30, x: 0, y: 15)
+        .shadow(color: .black.opacity(0.1), radius: 5, x: 0, y: 2)
         .onAppear {
             viewModel.refreshWindows()
         }
-        .onKeyPress(.escape) {
-            if viewModel.searchText.isEmpty {
-                onDismiss()
-            } else {
-                viewModel.searchText = ""
-            }
-            return .handled
-        }
-        .onKeyPress(.upArrow) {
-            viewModel.selectPrevious()
-            return .handled
-        }
-        .onKeyPress(.downArrow) {
-            viewModel.selectNext()
-            return .handled
-        }
-        .onKeyPress(.return) {
-            if let window = viewModel.selectedWindow {
-                viewModel.activateWindow(window)
-                onDismiss()
-            }
-            return .handled
+        .handlesKeyboardShortcuts()
+    }
+    
+    // MARK: - Subviews
+    
+    private var searchSection: some View {
+        SearchField(
+            text: $viewModel.searchText,
+            placeholder: dynamicPlaceholder
+        )
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+    }
+    
+    private var dynamicPlaceholder: String {
+        let count = viewModel.totalCount
+        if count == 0 {
+            return "Search windows"
+        } else if count == 1 {
+            return "Search 1 window"
+        } else {
+            return "Search \(count) windows"
         }
     }
     
-    private var emptyStateView: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 32))
-                .foregroundColor(.secondary)
-            Text("No windows found")
-                .font(.headline)
-                .foregroundColor(.secondary)
+    @ViewBuilder
+    private var resultsSection: some View {
+        if viewModel.filteredWindows.isEmpty {
+            EmptyStateView(searchText: viewModel.searchText)
+        } else {
+            ResultsList(
+                windows: viewModel.filteredWindows,
+                selectedIndex: $viewModel.selectedIndex,
+                onSelect: { window in
+                    viewModel.activateWindow(window)
+                    onDismiss()
+                },
+                onHover: { index in
+                    viewModel.selectedIndex = index
+                }
+            )
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    
+    private var windowBackground: some View {
+        VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
+    }
+    
+    private var windowBorder: some View {
+        RoundedRectangle(cornerRadius: 14)
+            .stroke(Color.white.opacity(0.15), lineWidth: 1)
+    }
+    
+    // MARK: - Keyboard Handling
+    
+    private func handlesKeyboardShortcuts() -> some View {
+        self
+            // Escape key
+            .onKeyPress(.escape) {
+                handleEscape()
+                return .handled
+            }
+            // Arrow keys
+            .onKeyPress(.upArrow) {
+                viewModel.selectPrevious()
+                return .handled
+            }
+            .onKeyPress(.downArrow) {
+                viewModel.selectNext()
+                return .handled
+            }
+            // Enter key
+            .onKeyPress(.return) {
+                handleReturn()
+                return .handled
+            }
+            // Cmd+1 through Cmd+9
+            .onKeyPress(keys: ["1", "2", "3", "4", "5", "6", "7", "8", "9"], phases: .down) { press in
+                if press.modifiers.contains(.command) {
+                    if let number = Int(press.characters), number >= 1 && number <= 9 {
+                        handleCommandNumber(number)
+                        return .handled
+                    }
+                }
+                return .ignored
+            }
+    }
+    
+    // MARK: - Key Handlers
+    
+    private func handleEscape() {
+        if viewModel.searchText.isEmpty {
+            onDismiss()
+        } else {
+            withAnimation(.easeOut(duration: 0.15)) {
+                viewModel.searchText = ""
+            }
+        }
+    }
+    
+    private func handleReturn() {
+        if let window = viewModel.selectedWindow {
+            viewModel.activateWindow(window)
+            onDismiss()
+        }
+    }
+    
+    private func handleCommandNumber(_ number: Int) {
+        let index = number - 1
+        if index < viewModel.filteredWindows.count {
+            let window = viewModel.filteredWindows[index]
+            viewModel.activateWindow(window)
+            onDismiss()
+        }
     }
 }
 
@@ -96,11 +176,20 @@ struct VisualEffectView: NSViewRepresentable {
         view.material = material
         view.blendingMode = blendingMode
         view.state = .active
+        view.wantsLayer = true
         return view
     }
     
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
         nsView.blendingMode = blendingMode
+    }
+}
+
+// MARK: - Preview
+
+#Preview {
+    SwitcherWindow(windowService: WindowService()) {
+        print("Dismissed")
     }
 }
