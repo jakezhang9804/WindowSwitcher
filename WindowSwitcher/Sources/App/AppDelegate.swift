@@ -6,16 +6,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     // MARK: - Properties
     
-    private var statusItem: NSStatusItem?
+    private var statusItem: NSStatusItem!
     private var switcherPanel: NSPanel?
     private let windowService = WindowService()
     
     // MARK: - Lifecycle
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        setupStatusBarItem()
-        setupGlobalHotkey()
-        requestAccessibilityPermission()
+        // Ensure we run on main thread
+        DispatchQueue.main.async { [weak self] in
+            self?.setupStatusBarItem()
+            self?.setupGlobalHotkey()
+            self?.requestAccessibilityPermission()
+        }
     }
     
     func applicationWillTerminate(_ notification: Notification) {
@@ -30,13 +33,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Setup
     
     private func setupStatusBarItem() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // Create status bar item
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         
-        if let button = statusItem?.button {
-            button.image = NSImage(systemSymbolName: "rectangle.stack", accessibilityDescription: "Window Switcher")
-            button.image?.isTemplate = true
+        guard let button = statusItem.button else {
+            print("❌ Failed to create status bar button")
+            return
         }
         
+        // Set icon
+        if let image = NSImage(systemSymbolName: "rectangle.stack", accessibilityDescription: "Window Switcher") {
+            image.isTemplate = true
+            button.image = image
+        } else {
+            // Fallback: use text if symbol not available
+            button.title = "WS"
+        }
+        
+        // Create menu
         let menu = NSMenu()
         
         let showItem = NSMenuItem(title: "Show Switcher", action: #selector(showSwitcher), keyEquivalent: "")
@@ -51,16 +65,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         menu.addItem(NSMenuItem.separator())
         
-        let quitItem = NSMenuItem(title: "Quit WindowSwitcher", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit WindowSwitcher", action: #selector(quitApp), keyEquivalent: "q")
+        quitItem.target = self
         menu.addItem(quitItem)
         
-        statusItem?.menu = menu
+        statusItem.menu = menu
+        
+        print("✅ Status bar item created successfully")
     }
     
     private func setupGlobalHotkey() {
         KeyboardShortcuts.onKeyUp(for: .showSwitcher) { [weak self] in
-            self?.toggleSwitcher()
+            DispatchQueue.main.async {
+                self?.toggleSwitcher()
+            }
         }
+        print("✅ Global hotkey registered: Option+Tab")
     }
     
     private func requestAccessibilityPermission() {
@@ -68,7 +88,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let accessEnabled = AXIsProcessTrustedWithOptions(options)
         
         if !accessEnabled {
-            print("⚠️ Accessibility permission not granted")
+            print("⚠️ Accessibility permission not granted - please enable in System Settings")
         } else {
             print("✅ Accessibility permission granted")
         }
@@ -90,7 +110,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             createSwitcherPanel()
         }
         
-        guard let panel = switcherPanel else { return }
+        guard let panel = switcherPanel else {
+            print("❌ Failed to create switcher panel")
+            return
+        }
+        
+        // Recreate content to refresh window list
+        updateSwitcherContent()
         
         // Position panel in center of main screen
         if let screen = NSScreen.main {
@@ -105,13 +131,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         
-        // Recreate content to refresh window list
-        updateSwitcherContent()
+        print("✅ Switcher shown")
     }
     
     @objc private func showSettings() {
-        // TODO: Implement settings window
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        // Open settings window using SwiftUI Settings scene
+        if #available(macOS 14.0, *) {
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        } else {
+            NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        }
+    }
+    
+    @objc private func quitApp() {
+        NSApp.terminate(nil)
     }
     
     private func createSwitcherPanel() {
@@ -138,7 +171,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hidesOnDeactivate = true
         
         switcherPanel = panel
-        updateSwitcherContent()
+        
+        print("✅ Switcher panel created")
     }
     
     private func updateSwitcherContent() {
