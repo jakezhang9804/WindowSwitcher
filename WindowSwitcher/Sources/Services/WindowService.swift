@@ -72,6 +72,7 @@ class WindowService {
                 title: windowName,
                 appName: ownerName,
                 appPID: ownerPID,
+                appBundleIdentifier: appsByPID[ownerPID]?.bundleIdentifier,
                 appIcon: appIcon
             )
             

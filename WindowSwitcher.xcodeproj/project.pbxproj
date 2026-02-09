@@ -37,6 +37,7 @@
 		/* Frameworks */
 		FRM001 /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = PKG001; };
 		FRM002 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = PKG002; };
+		FRM003 /* AppSwitcherKit in Frameworks */ = {isa = PBXBuildFile; productRef = PKG003; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -70,6 +71,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FRM003 /* AppSwitcherKit in Frameworks */,
 				FRM001 /* KeyboardShortcuts in Frameworks */,
 				FRM002 /* Sparkle in Frameworks */,
 			);
@@ -199,6 +201,7 @@
 			);
 			name = WindowSwitcher;
 			packageProductDependencies = (
+				PKG003 /* AppSwitcherKit */,
 				PKG001 /* KeyboardShortcuts */,
 				PKG002 /* Sparkle */,
 			);
@@ -231,6 +234,7 @@
 			);
 			mainGroup = ROOT;
 			packageReferences = (
+				PKGREF003 /* AppSwitcherKit */,
 				PKGREF001 /* KeyboardShortcuts */,
 				PKGREF002 /* Sparkle */,
 			);
@@ -497,7 +501,19 @@
 		};
 /* End XCRemoteSwiftPackageReference section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		PKGREF003 /* AppSwitcherKit */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Libraries/AppSwitcherKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
+		PKG003 /* AppSwitcherKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = PKGREF003 /* AppSwitcherKit */;
+			productName = AppSwitcherKit;
+		};
 		PKG001 /* KeyboardShortcuts */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = PKGREF001 /* KeyboardShortcuts */;

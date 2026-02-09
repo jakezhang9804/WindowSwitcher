@@ -77,6 +77,10 @@ struct SwitcherWindow: View {
             }
             return .ignored
         }
+        // App trigger key in panel (single key, no modifiers except shift)
+        .onKeyPress(phases: .down) { press in
+            handlePanelTrigger(press)
+        }
     }
     
     // MARK: - Subviews
@@ -155,6 +159,21 @@ struct SwitcherWindow: View {
             viewModel.activateWindow(window)
             onDismiss()
         }
+    }
+
+    private func handlePanelTrigger(_ press: KeyPress) -> KeyPress.Result {
+        if press.modifiers.contains(.command) ||
+            press.modifiers.contains(.option) ||
+            press.modifiers.contains(.control) {
+            return .ignored
+        }
+
+        if viewModel.activateWindowForPanelTrigger(press.characters) {
+            onDismiss()
+            return .handled
+        }
+
+        return .ignored
     }
 }
 

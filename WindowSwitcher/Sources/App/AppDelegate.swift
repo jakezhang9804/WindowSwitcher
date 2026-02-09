@@ -6,6 +6,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     // MARK: - Properties
     
+    private static let hasShownInitialSettingsKey = "switcher.hasShownInitialSettings.v1"
+
     private var statusItem: NSStatusItem!
     private var switcherPanel: NSPanel?
     private var settingsWindow: NSWindow?
@@ -19,6 +21,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusBarItem()
         setupGlobalHotkey()
         requestAccessibilityPermission()
+        showSettingsOnFirstLaunchIfNeeded()
         
         print("✅ App initialization complete")
     }
@@ -110,6 +113,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             print("⚠️ Accessibility permission NOT granted")
             print("   Please enable in System Settings > Privacy & Security > Accessibility")
+        }
+    }
+
+    private func showSettingsOnFirstLaunchIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: Self.hasShownInitialSettingsKey) == false else {
+            return
+        }
+
+        defaults.set(true, forKey: Self.hasShownInitialSettingsKey)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            self?.openSettings()
         }
     }
     
@@ -220,7 +235,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         print("📍 Creating settings window...")
         
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 450, height: 300),
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 560),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
