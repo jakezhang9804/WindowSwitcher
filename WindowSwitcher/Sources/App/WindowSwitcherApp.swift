@@ -1,15 +1,15 @@
 import AppKit
 
 /// 应用入口
-/// 使用传统 AppKit 方式启动，确保 AppDelegate 正确初始化
-/// 参考 TabTab 的启动方式
+/// NSApplication.delegate 是 weak 引用，必须用 static 变量持有 AppDelegate
+/// 防止被 ARC 释放
 @main
 enum WindowSwitcherApp {
+    /// 用 static 变量持有 delegate，防止被 ARC 释放
+    static let delegate = AppDelegate()
+    
     static func main() {
         let app = NSApplication.shared
-        
-        // delegate 必须用局部变量持有，否则可能被释放
-        let delegate = AppDelegate()
         app.delegate = delegate
         
         // 不显示在 Dock 中，仅菜单栏图标
