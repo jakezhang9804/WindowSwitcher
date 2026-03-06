@@ -1,61 +1,50 @@
 import SwiftUI
+import AppKit
 
+/// 单个窗口条目，与 TabTab 风格一致
+/// 布局：[应用图标] [应用名(粗体) + 窗口标题(灰色)] [窗口数量]
 struct ResultItem: View {
     let window: WindowInfo
     let isSelected: Bool
     let index: Int
-    let showShortcut: Bool
-    
-    @State private var isHovered: Bool = false
-    
-    init(window: WindowInfo, isSelected: Bool, index: Int, showShortcut: Bool = true) {
-        self.window = window
-        self.isSelected = isSelected
-        self.index = index
-        self.showShortcut = showShortcut
-    }
     
     var body: some View {
-        HStack(spacing: 12) {
-            // App Icon
+        HStack(spacing: 10) {
+            // 应用图标
             appIconView
             
-            // Text Content
-            VStack(alignment: .leading, spacing: 3) {
-                // Primary Title (Window Title)
-                Text(window.title)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(isSelected ? .white : .primary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                
-                // Secondary Info (App Name)
+            // 文字区域
+            VStack(alignment: .leading, spacing: 2) {
                 Text(window.appName)
-                    .font(.system(size: 12))
-                    .foregroundColor(isSelected ? .white.opacity(0.8) : .secondary)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.white)
                     .lineLimit(1)
-                    .truncationMode(.tail)
+                
+                if !window.title.isEmpty {
+                    Text(window.title)
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.45))
+                        .lineLimit(1)
+                }
             }
             
-            Spacer(minLength: 8)
+            Spacer(minLength: 4)
             
-            // Shortcut Hint (for first 9 items)
-            if showShortcut && index < 9 {
-                shortcutBadge
+            // 右侧窗口数量
+            if window.windowCount > 1 {
+                Text("\(window.windowCount)")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundColor(.white.opacity(0.45))
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(backgroundView)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isSelected ? Color.white.opacity(0.15) : Color.clear)
+        )
         .contentShape(Rectangle())
-        .onHover { hovering in
-            isHovered = hovering
-        }
-        .animation(.easeInOut(duration: 0.1), value: isHovered)
-        .animation(.easeInOut(duration: 0.1), value: isSelected)
     }
-    
-    // MARK: - Subviews
     
     @ViewBuilder
     private var appIconView: some View {
@@ -64,68 +53,16 @@ struct ResultItem: View {
                 .resizable()
                 .interpolation(.high)
                 .aspectRatio(contentMode: .fit)
-                .frame(width: 36, height: 36)
-                .shadow(color: .black.opacity(0.1), radius: 2, x: 0, y: 1)
+                .frame(width: 28, height: 28)
         } else {
-            Image(systemName: "app.fill")
-                .font(.system(size: 28))
-                .foregroundColor(.secondary)
-                .frame(width: 36, height: 36)
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.white.opacity(0.08))
+                .frame(width: 28, height: 28)
+                .overlay(
+                    Image(systemName: "app")
+                        .font(.system(size: 14))
+                        .foregroundColor(.white.opacity(0.3))
+                )
         }
     }
-    
-    private var shortcutBadge: some View {
-        Text("⌘\(index + 1)")
-            .font(.system(size: 11, weight: .medium, design: .rounded))
-            .foregroundColor(isSelected ? .white.opacity(0.9) : .secondary)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(isSelected ? Color.white.opacity(0.2) : Color.primary.opacity(0.06))
-            )
-    }
-    
-    @ViewBuilder
-    private var backgroundView: some View {
-        if isSelected {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.accentColor)
-        } else if isHovered {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.primary.opacity(0.06))
-        } else {
-            Color.clear
-        }
-    }
-}
-
-#Preview {
-    VStack(spacing: 4) {
-        ResultItem(
-            window: WindowInfo(
-                id: 1,
-                title: "SwitcherWindow.swift - WindowSwitcher",
-                appName: "Xcode",
-                appPID: 123,
-                appIcon: nil
-            ),
-            isSelected: true,
-            index: 0
-        )
-        ResultItem(
-            window: WindowInfo(
-                id: 2,
-                title: "Google Chrome",
-                appName: "Chrome",
-                appPID: 456,
-                appIcon: nil
-            ),
-            isSelected: false,
-            index: 1
-        )
-    }
-    .padding()
-    .frame(width: 500)
-    .background(Color.gray.opacity(0.1))
 }

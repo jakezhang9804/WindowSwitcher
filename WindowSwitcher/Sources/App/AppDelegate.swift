@@ -2,133 +2,81 @@ import AppKit
 import SwiftUI
 import KeyboardShortcuts
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
     
     // MARK: - Properties
     
-    private static let hasShownInitialSettingsKey = "switcher.hasShownInitialSettings.v1"
-
+    /// 必须用 strong reference 保持 statusItem 存活
     private var statusItem: NSStatusItem!
     private var switcherPanel: NSPanel?
-    private var settingsWindow: NSWindow?
+    private var settingsWindowController: NSWindowController?
     private let windowService = WindowService()
     
     // MARK: - Lifecycle
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("🚀 applicationDidFinishLaunching called")
-        
         setupStatusBarItem()
         setupGlobalHotkey()
-        requestAccessibilityPermission()
-        showSettingsOnFirstLaunchIfNeeded()
-        
-        print("✅ App initialization complete")
-    }
-    
-    func applicationWillTerminate(_ notification: Notification) {
-        print("👋 applicationWillTerminate called")
-    }
-    
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        showSwitcher()
-        return true
+        checkAccessibilityPermission()
     }
     
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
-        return true
+        true
     }
     
-    // MARK: - Setup
+    // MARK: - Status Bar
     
     private func setupStatusBarItem() {
-        print("📍 Setting up status bar item...")
-        
-        // 创建状态栏项目
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         
-        guard let button = statusItem.button else {
-            print("❌ Failed to get status item button")
-            return
-        }
+        guard let button = statusItem.button else { return }
         
-        // 设置图标
-        if let image = NSImage(systemSymbolName: "rectangle.stack", accessibilityDescription: "Window Switcher") {
+        if let image = NSImage(systemSymbolName: "rectangle.stack", accessibilityDescription: "WindowSwitcher") {
             image.isTemplate = true
             button.image = image
-            print("✅ Status bar icon set (SF Symbol)")
         } else {
-            // 备用方案：使用文字
-            button.title = "⧉"
-            print("⚠️ Using fallback text for status bar")
+            button.title = "WS"
         }
         
-        // 创建菜单
         let menu = NSMenu()
         
-        let showItem = NSMenuItem(title: "Show Switcher", action: #selector(showSwitcher), keyEquivalent: "")
+        let showItem = NSMenuItem(title: "Show Switcher", action: #selector(showSwitcherAction), keyEquivalent: "")
         showItem.target = self
         menu.addItem(showItem)
         
-        menu.addItem(NSMenuItem.separator())
+        menu.addItem(.separator())
         
-        let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ",")
+        let settingsItem = NSMenuItem(title: "Preferences...", action: #selector(openPreferences), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
         
-        menu.addItem(NSMenuItem.separator())
+        menu.addItem(.separator())
         
         let quitItem = NSMenuItem(title: "Quit WindowSwitcher", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
         
         statusItem.menu = menu
-        
-        print("✅ Status bar item created successfully")
     }
     
+    // MARK: - Global Hotkey
+    
     private func setupGlobalHotkey() {
-        print("📍 Setting up global hotkey...")
-        
-        // 使用 KeyboardShortcuts 库注册全局快捷键
         KeyboardShortcuts.onKeyUp(for: .showSwitcher) { [weak self] in
-            print("🔥 Hotkey triggered!")
             DispatchQueue.main.async {
                 self?.toggleSwitcher()
             }
         }
-        
-        print("✅ Global hotkey registered: Option+Tab")
     }
     
-    private func requestAccessibilityPermission() {
-        print("📍 Checking accessibility permission...")
-        
-        // 请求辅助功能权限
+    // MARK: - Accessibility
+    
+    private func checkAccessibilityPermission() {
         let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeRetainedValue(): true]
-        let accessEnabled = AXIsProcessTrustedWithOptions(options)
-        
-        if accessEnabled {
-            print("✅ Accessibility permission granted")
-        } else {
-            print("⚠️ Accessibility permission NOT granted")
-            print("   Please enable in System Settings > Privacy & Security > Accessibility")
-        }
-    }
-
-    private func showSettingsOnFirstLaunchIfNeeded() {
-        let defaults = UserDefaults.standard
-        guard defaults.bool(forKey: Self.hasShownInitialSettingsKey) == false else {
-            return
-        }
-
-        defaults.set(true, forKey: Self.hasShownInitialSettingsKey)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            self?.openSettings()
-        }
+        let _ = AXIsProcessTrustedWithOptions(options)
     }
     
-    // MARK: - Actions
+    // MARK: - Switcher Panel
     
     private func toggleSwitcher() {
         if let panel = switcherPanel, panel.isVisible {
@@ -138,67 +86,50 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     
-    @objc func showSwitcher() {
-        print("📍 showSwitcher called")
-        
-        // 如果面板不存在，创建它
+    @objc private func showSwitcherAction() {
+        showSwitcher()
+    }
+    
+    private func showSwitcher() {
         if switcherPanel == nil {
             createSwitcherPanel()
         }
         
-        guard let panel = switcherPanel else {
-            print("❌ Failed to create switcher panel")
-            return
-        }
+        guard let panel = switcherPanel else { return }
         
-        // 更新内容（刷新窗口列表）
-        updateSwitcherContent()
+        // 每次显示时刷新内容
+        let contentView = SwitcherWindow(windowService: windowService, onDismiss: { [weak self] in
+            self?.hideSwitcher()
+        }, onOpenSettings: { [weak self] in
+            self?.hideSwitcher()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                self?.openPreferences()
+            }
+        })
+        panel.contentView = NSHostingView(rootView: contentView)
         
-        // 将面板定位到屏幕中央偏上
-        if let screen = NSScreen.main {
-            let screenFrame = screen.visibleFrame
-            let panelSize = panel.frame.size
-            let x = screenFrame.midX - panelSize.width / 2
-            let y = screenFrame.midY - panelSize.height / 2 + 100
-            panel.setFrameOrigin(NSPoint(x: x, y: y))
-        }
+        // 定位到屏幕左侧（与 TabTab 一致）
+        positionPanelOnLeft(panel)
         
-        // 显示面板
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        
-        print("✅ Switcher panel shown")
     }
     
-    @objc private func openSettings() {
-        print("📍 openSettings called")
-        
-        if settingsWindow == nil {
-            createSettingsWindow()
-        }
-        
-        settingsWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+    private func hideSwitcher() {
+        switcherPanel?.orderOut(nil)
     }
-    
-    @objc private func quitApp() {
-        print("📍 quitApp called")
-        NSApp.terminate(nil)
-    }
-    
-    // MARK: - Window Creation
     
     private func createSwitcherPanel() {
-        print("📍 Creating switcher panel...")
+        let panelWidth: CGFloat = 340
+        let panelHeight: CGFloat = 600
         
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
+            contentRect: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight),
             styleMask: [.nonactivatingPanel, .fullSizeContentView, .borderless],
             backing: .buffered,
             defer: false
         )
         
-        // 面板配置
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
@@ -207,52 +138,55 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.titleVisibility = .hidden
         panel.backgroundColor = .clear
         panel.isOpaque = false
-        panel.hasShadow = false
+        panel.hasShadow = true
         panel.animationBehavior = .utilityWindow
         panel.hidesOnDeactivate = true
         
         switcherPanel = panel
-        
-        print("✅ Switcher panel created")
     }
     
-    private func updateSwitcherContent() {
-        guard let panel = switcherPanel else { return }
+    private func positionPanelOnLeft(_ panel: NSPanel) {
+        guard let screen = NSScreen.main else { return }
         
-        let contentView = SwitcherWindow(windowService: windowService) { [weak self] in
-            self?.hideSwitcher()
+        let screenFrame = screen.visibleFrame
+        let panelWidth: CGFloat = 340
+        let panelHeight: CGFloat = min(screenFrame.height - 40, 700)
+        
+        let x = screenFrame.minX + 8
+        let y = screenFrame.midY - panelHeight / 2
+        
+        panel.setFrame(NSRect(x: x, y: y, width: panelWidth, height: panelHeight), display: true)
+    }
+    
+    // MARK: - Preferences
+    
+    @objc private func openPreferences() {
+        if settingsWindowController == nil {
+            let settingsView = SettingsView()
+            let hostingController = NSHostingController(rootView: settingsView)
+            
+            let window = NSWindow(contentViewController: hostingController)
+            window.title = "Preferences"
+            window.styleMask = [.titled, .closable]
+            window.setContentSize(NSSize(width: 520, height: 480))
+            window.center()
+            window.isReleasedWhenClosed = false
+            
+            settingsWindowController = NSWindowController(window: window)
         }
         
-        panel.contentView = NSHostingView(rootView: contentView)
+        settingsWindowController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
     
-    private func hideSwitcher() {
-        switcherPanel?.orderOut(nil)
-        print("✅ Switcher hidden")
-    }
+    // MARK: - Quit
     
-    private func createSettingsWindow() {
-        print("📍 Creating settings window...")
-        
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 620, height: 560),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
-        
-        window.title = "WindowSwitcher Settings"
-        window.center()
-        window.contentView = NSHostingView(rootView: SettingsView())
-        window.isReleasedWhenClosed = false
-        
-        settingsWindow = window
-        
-        print("✅ Settings window created")
+    @objc private func quitApp() {
+        NSApp.terminate(nil)
     }
 }
 
-// MARK: - Keyboard Shortcuts Extension
+// MARK: - Keyboard Shortcuts
 
 extension KeyboardShortcuts.Name {
     static let showSwitcher = Self("showSwitcher", default: .init(.tab, modifiers: [.option]))

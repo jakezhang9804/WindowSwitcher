@@ -1,5 +1,6 @@
 import SwiftUI
 
+/// 窗口结果列表
 struct ResultsList: View {
     let windows: [WindowInfo]
     @Binding var selectedIndex: Int
@@ -20,7 +21,7 @@ struct ResultsList: View {
     
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView(.vertical, showsIndicators: true) {
+            ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 2) {
                     ForEach(Array(windows.enumerated()), id: \.element.id) { index, window in
                         ResultItem(
@@ -39,11 +40,11 @@ struct ResultsList: View {
                         }
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
             }
             .onChange(of: selectedIndex) { _, newValue in
-                withAnimation(.easeInOut(duration: 0.12)) {
+                withAnimation(.easeOut(duration: 0.1)) {
                     proxy.scrollTo(newValue, anchor: .center)
                 }
             }
@@ -51,40 +52,21 @@ struct ResultsList: View {
     }
 }
 
-// MARK: - Empty State View
-
+/// 空状态视图
 struct EmptyStateView: View {
     let searchText: String
     
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             Image(systemName: searchText.isEmpty ? "rectangle.stack" : "magnifyingglass")
-                .font(.system(size: 36, weight: .light))
-                .foregroundColor(.secondary.opacity(0.6))
+                .font(.system(size: 28, weight: .light))
+                .foregroundColor(.white.opacity(0.3))
             
             Text(searchText.isEmpty ? "No windows available" : "No results found")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundColor(.secondary)
-            
-            if !searchText.isEmpty {
-                Text("Try a different search term")
-                    .font(.system(size: 13))
-                    .foregroundColor(.secondary.opacity(0.7))
-            }
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white.opacity(0.4))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.vertical, 40)
+        .padding(.vertical, 30)
     }
-}
-
-#Preview {
-    ResultsList(
-        windows: [
-            WindowInfo(id: 1, title: "Window 1", appName: "App 1", appPID: 1, appIcon: nil),
-            WindowInfo(id: 2, title: "Window 2", appName: "App 2", appPID: 2, appIcon: nil),
-        ],
-        selectedIndex: .constant(0),
-        onSelect: { _ in }
-    )
-    .frame(width: 500, height: 300)
 }

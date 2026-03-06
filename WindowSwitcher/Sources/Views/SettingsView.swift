@@ -1,37 +1,141 @@
 import SwiftUI
-import AppKit
 import KeyboardShortcuts
-import AppSwitcherKit
 
+/// 设置窗口，参考 TabTab 的 Preferences 设计
+/// 4 个 Tab：Preferences, Hotkeys, License(去掉), About
+/// 简化为：Preferences, Hotkeys, About
 struct SettingsView: View {
-    @StateObject private var viewModel = SettingsViewModel()
-
     var body: some View {
         TabView {
-            GeneralSettingsView(viewModel: viewModel)
+            PreferencesTab()
                 .tabItem {
-                    Label("General", systemImage: "gear")
+                    Label("Preferences", systemImage: "gearshape")
                 }
-
-            AppearanceSettingsView()
+            
+            HotkeysTab()
                 .tabItem {
-                    Label("Appearance", systemImage: "paintbrush")
+                    Label("Hotkeys", systemImage: "command")
                 }
-
-            AboutView()
+            
+            AboutTab()
                 .tabItem {
                     Label("About", systemImage: "info.circle")
                 }
         }
-        .frame(width: 600, height: 520)
+        .frame(width: 520, height: 480)
     }
 }
 
-// MARK: - General Settings
+// MARK: - Preferences Tab
 
-struct GeneralSettingsView: View {
-    @ObservedObject var viewModel: SettingsViewModel
+struct PreferencesTab: View {
+    @AppStorage("showMenuBarIcon") private var showMenuBarIcon = true
+    @AppStorage("startAtLogin") private var startAtLogin = false
+    @AppStorage("windowOnlyMode") private var windowOnlyMode = false
+    @StateObject private var appConfigVM = AppConfigViewModel()
+    
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                // General Section
+                GroupBox(label: Text("General").font(.headline)) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle("Show menu bar icon", isOn: $showMenuBarIcon)
+                        Toggle("Start at login", isOn: $startAtLogin)
+                    }
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                
+                // Switcher Settings Section
+                GroupBox(label: Text("Switcher Settings").font(.headline)) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle("Window only mode", isOn: $windowOnlyMode)
+                        Text("When enabled, individual tabs of each app window will no longer be tracked.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                
+                // App Specific Configurations
+                GroupBox(label: Text("App specific configurations").font(.headline)) {
+                    VStack(spacing: 0) {
+                        // Search field
+                        TextField("Search Apps", text: $appConfigVM.searchText)
+                            .textFieldStyle(.roundedBorder)
+                            .padding(.vertical, 8)
+                        
+                        Divider()
+                        
+                        // App list
+                        if appConfigVM.filteredApps.isEmpty {
+                            Text("No running apps found")
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 20)
+                        } else {
+                            ScrollView {
+                                LazyVStack(spacing: 0) {
+                                    ForEach(appConfigVM.filteredApps) { app in
+                                        AppConfigRow(app: app, viewModel: appConfigVM)
+                                        Divider()
+                                    }
+                                }
+                            }
+                            .frame(height: 200)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .padding(16)
+        }
+    }
+}
 
+// MARK: - App Config Row
+
+struct AppConfigRow: View {
+    let app: AppConfigItem
+    @ObservedObject var viewModel: AppConfigViewModel
+    
+    var body: some View {
+        HStack(spacing: 10) {
+            // App icon
+            if let icon = app.icon {
+                Image(nsImage: icon)
+                    .resizable()
+                    .frame(width: 22, height: 22)
+            } else {
+                Image(systemName: "app")
+                    .frame(width: 22, height: 22)
+            }
+            
+            // App name
+            Text(app.name)
+                .font(.system(size: 13))
+                .lineLimit(1)
+            
+            Spacer()
+            
+            // Ignore app toggle
+            Toggle("Ignore app", isOn: Binding(
+                get: { viewModel.isIgnored(app.bundleID) },
+                set: { viewModel.setIgnored(app.bundleID, ignored: $0) }
+            ))
+            .toggleStyle(.checkbox)
+            .font(.system(size: 12))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+    }
+}
+
+// MARK: - Hotkeys Tab
+
+struct HotkeysTab: View {
     var body: some View {
         Form {
             Section {
@@ -39,70 +143,13 @@ struct GeneralSettingsView: View {
             } header: {
                 Text("Keyboard Shortcuts")
             }
-
+            
             Section {
-                Toggle("Launch at Login", isOn: $viewModel.launchAtLogin)
+                Text("Press the shortcut key to quickly switch between windows.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             } header: {
-                Text("Startup")
-            }
-
-            Section {
-                HStack(spacing: 10) {
-                    TextField("Search apps by name or bundle identifier", text: $viewModel.searchText)
-                        .textFieldStyle(.roundedBorder)
-
-                    if viewModel.isLoadingApps {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-
-                    Button("Reset to Show All") {
-                        viewModel.resetToShowAllApps()
-                    }
-                    .disabled(viewModel.isUsingDefaultVisibility)
-                }
-
-                if viewModel.isUsingDefaultVisibility {
-                    Text("Whitelist is not configured yet. All applications are visible by default.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                if viewModel.filteredApps.isEmpty {
-                    Text("No installed applications matched your search.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: 6) {
-                            ForEach(viewModel.filteredApps, id: \.bundleID) { app in
-                                ApplicationSettingRow(
-                                    app: app,
-                                    isAllowed: viewModel.isAppAllowed(app.bundleID),
-                                    triggerKey: viewModel.triggerKey(for: app.bundleID),
-                                    hasConflict: viewModel.conflictingBundleIDs.contains(app.bundleID),
-                                    onAllowedChange: { isAllowed in
-                                        viewModel.setAppAllowed(app.bundleID, isAllowed: isAllowed)
-                                    },
-                                    onTriggerKeyChange: { value in
-                                        viewModel.updateTriggerKey(for: app.bundleID, rawInput: value)
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    .frame(minHeight: 220, maxHeight: 280)
-                }
-
-                if let validationMessage = viewModel.validationMessage {
-                    Text(validationMessage)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
-            } header: {
-                Text("Applications in Switcher")
-            } footer: {
-                Text("You can assign one single key (A-Z or 0-9) per app. The key is active only while the switcher panel is visible.")
+                Text("Tips")
             }
         }
         .formStyle(.grouped)
@@ -110,118 +157,96 @@ struct GeneralSettingsView: View {
     }
 }
 
-private struct ApplicationSettingRow: View {
-    let app: InstalledApp
-    let isAllowed: Bool
-    let triggerKey: String
-    let hasConflict: Bool
-    let onAllowedChange: (Bool) -> Void
-    let onTriggerKeyChange: (String) -> Void
+// MARK: - About Tab
 
-    var body: some View {
-        HStack(spacing: 10) {
-            Toggle(
-                "",
-                isOn: Binding(
-                    get: { isAllowed },
-                    set: onAllowedChange
-                )
-            )
-            .labelsHidden()
-
-            Image(nsImage: NSWorkspace.shared.icon(forFile: app.bundlePath))
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 18, height: 18)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(app.displayName)
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-
-                Text(app.bundleID)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-
-            TextField(
-                "A",
-                text: Binding(
-                    get: { triggerKey },
-                    set: onTriggerKeyChange
-                )
-            )
-            .textFieldStyle(.roundedBorder)
-            .multilineTextAlignment(.center)
-            .frame(width: 44)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(hasConflict ? Color.red.opacity(0.15) : Color.primary.opacity(0.04))
-        )
-    }
-}
-
-// MARK: - Appearance Settings
-
-struct AppearanceSettingsView: View {
-    @AppStorage("windowWidth") private var windowWidth: Double = 600
-    @AppStorage("maxResults") private var maxResults: Int = 20
-
-    var body: some View {
-        Form {
-            Section {
-                Slider(value: $windowWidth, in: 400...800, step: 50) {
-                    Text("Window Width")
-                } minimumValueLabel: {
-                    Text("400")
-                } maximumValueLabel: {
-                    Text("800")
-                }
-
-                Stepper("Max Results: \(maxResults)", value: $maxResults, in: 10...50, step: 5)
-            } header: {
-                Text("Window")
-            }
-        }
-        .formStyle(.grouped)
-        .padding()
-    }
-}
-
-// MARK: - About View
-
-struct AboutView: View {
+struct AboutTab: View {
     var body: some View {
         VStack(spacing: 16) {
+            Spacer()
+            
             Image(systemName: "rectangle.stack")
-                .font(.system(size: 64))
+                .font(.system(size: 56))
                 .foregroundColor(.accentColor)
-
+            
             Text("WindowSwitcher")
-                .font(.title)
+                .font(.title2)
                 .fontWeight(.bold)
-
+            
             Text("Version 1.0.0")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
-
+            
             Text("A fast and native window switcher for macOS")
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
-
+            
             Spacer()
-
-            Button("Check for Updates") {
-                // Trigger Sparkle update check
-            }
         }
+        .frame(maxWidth: .infinity)
         .padding()
+    }
+}
+
+// MARK: - App Config ViewModel
+
+struct AppConfigItem: Identifiable {
+    let id: String
+    let name: String
+    let bundleID: String
+    let icon: NSImage?
+    
+    init(from app: NSRunningApplication) {
+        self.id = app.bundleIdentifier ?? "\(app.processIdentifier)"
+        self.name = app.localizedName ?? "Unknown"
+        self.bundleID = app.bundleIdentifier ?? ""
+        self.icon = app.icon
+    }
+}
+
+@MainActor
+class AppConfigViewModel: ObservableObject {
+    @Published var searchText = ""
+    @Published var apps: [AppConfigItem] = []
+    @AppStorage("ignoredApps") private var ignoredAppsData: Data = Data()
+    
+    private var ignoredApps: Set<String> {
+        get {
+            (try? JSONDecoder().decode(Set<String>.self, from: ignoredAppsData)) ?? []
+        }
+        set {
+            ignoredAppsData = (try? JSONEncoder().encode(newValue)) ?? Data()
+        }
+    }
+    
+    var filteredApps: [AppConfigItem] {
+        let sorted = apps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        if searchText.isEmpty {
+            return sorted
+        }
+        return sorted.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+    
+    init() {
+        loadRunningApps()
+    }
+    
+    func loadRunningApps() {
+        let runningApps = NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .map { AppConfigItem(from: $0) }
+        apps = runningApps
+    }
+    
+    func isIgnored(_ bundleID: String) -> Bool {
+        ignoredApps.contains(bundleID)
+    }
+    
+    func setIgnored(_ bundleID: String, ignored: Bool) {
+        if ignored {
+            ignoredApps.insert(bundleID)
+        } else {
+            ignoredApps.remove(bundleID)
+        }
     }
 }

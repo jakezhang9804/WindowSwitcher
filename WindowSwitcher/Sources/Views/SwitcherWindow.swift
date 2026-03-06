@@ -1,59 +1,56 @@
 import SwiftUI
 import AppKit
 
+/// 主切换器面板，位于屏幕左侧，深色风格，与 TabTab 一致
 struct SwitcherWindow: View {
     @StateObject private var viewModel: SwitcherViewModel
     let onDismiss: () -> Void
+    let onOpenSettings: () -> Void
     
-    // MARK: - Constants
-    
-    private let windowWidth: CGFloat = 640
-    private let minHeight: CGFloat = 120
-    private let maxHeight: CGFloat = 500
-    private let itemHeight: CGFloat = 58
-    private let headerHeight: CGFloat = 60
-    
-    init(windowService: WindowService, onDismiss: @escaping () -> Void) {
+    init(windowService: WindowService, onDismiss: @escaping () -> Void, onOpenSettings: @escaping () -> Void) {
         _viewModel = StateObject(wrappedValue: SwitcherViewModel(windowService: windowService))
         self.onDismiss = onDismiss
+        self.onOpenSettings = onOpenSettings
     }
-    
-    // MARK: - Computed Properties
-    
-    private var dynamicHeight: CGFloat {
-        let contentHeight = CGFloat(viewModel.filteredWindows.count) * itemHeight + headerHeight + 16
-        return min(max(contentHeight, minHeight), maxHeight)
-    }
-    
-    // MARK: - Body
     
     var body: some View {
         VStack(spacing: 0) {
-            // Search Field
-            searchSection
+            // 搜索框
+            SearchField(text: $viewModel.searchText)
+                .padding(.horizontal, 12)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
             
-            // Divider
-            Divider()
-                .background(Color.primary.opacity(0.1))
+            // 结果列表或空状态
+            if viewModel.filteredWindows.isEmpty {
+                EmptyStateView(searchText: viewModel.searchText)
+            } else {
+                ResultsList(
+                    windows: viewModel.filteredWindows,
+                    selectedIndex: $viewModel.selectedIndex,
+                    onSelect: { window in
+                        viewModel.activateWindow(window)
+                        onDismiss()
+                    },
+                    onHover: { index in
+                        viewModel.selectedIndex = index
+                    }
+                )
+            }
             
-            // Results List or Empty State
-            resultsSection
+            // 底部设置齿轮
+            bottomBar
         }
-        .frame(width: windowWidth, height: dynamicHeight)
-        .background(windowBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(windowBorder)
-        .shadow(color: .black.opacity(0.25), radius: 30, x: 0, y: 15)
-        .shadow(color: .black.opacity(0.1), radius: 5, x: 0, y: 2)
+        .frame(maxHeight: .infinity)
+        .background(panelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
         .onAppear {
             viewModel.refreshWindows()
         }
-        // Escape key
         .onKeyPress(.escape) {
             handleEscape()
             return .handled
         }
-        // Arrow keys
         .onKeyPress(.upArrow) {
             viewModel.selectPrevious()
             return .handled
@@ -62,75 +59,35 @@ struct SwitcherWindow: View {
             viewModel.selectNext()
             return .handled
         }
-        // Enter key
         .onKeyPress(.return) {
             handleReturn()
             return .handled
         }
-        // Cmd+1 through Cmd+9
-        .onKeyPress(keys: ["1", "2", "3", "4", "5", "6", "7", "8", "9"], phases: .down) { press in
-            if press.modifiers.contains(.command) {
-                if let number = Int(press.characters), number >= 1 && number <= 9 {
-                    handleCommandNumber(number)
-                    return .handled
-                }
+    }
+    
+    // MARK: - Bottom Bar
+    
+    private var bottomBar: some View {
+        HStack {
+            Spacer()
+            Button(action: { onOpenSettings() }) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.35))
             }
-            return .ignored
+            .buttonStyle(.plain)
         }
-        // App trigger key in panel (single key, no modifiers except shift)
-        .onKeyPress(phases: .down) { press in
-            handlePanelTrigger(press)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+    
+    // MARK: - Background
+    
+    private var panelBackground: some View {
+        ZStack {
+            VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
+            Color.black.opacity(0.65)
         }
-    }
-    
-    // MARK: - Subviews
-    
-    private var searchSection: some View {
-        SearchField(
-            text: $viewModel.searchText,
-            placeholder: dynamicPlaceholder
-        )
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-    }
-    
-    private var dynamicPlaceholder: String {
-        let count = viewModel.totalCount
-        if count == 0 {
-            return "Search windows"
-        } else if count == 1 {
-            return "Search 1 window"
-        } else {
-            return "Search \(count) windows"
-        }
-    }
-    
-    @ViewBuilder
-    private var resultsSection: some View {
-        if viewModel.filteredWindows.isEmpty {
-            EmptyStateView(searchText: viewModel.searchText)
-        } else {
-            ResultsList(
-                windows: viewModel.filteredWindows,
-                selectedIndex: $viewModel.selectedIndex,
-                onSelect: { window in
-                    viewModel.activateWindow(window)
-                    onDismiss()
-                },
-                onHover: { index in
-                    viewModel.selectedIndex = index
-                }
-            )
-        }
-    }
-    
-    private var windowBackground: some View {
-        VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
-    }
-    
-    private var windowBorder: some View {
-        RoundedRectangle(cornerRadius: 14)
-            .stroke(Color.white.opacity(0.15), lineWidth: 1)
     }
     
     // MARK: - Key Handlers
@@ -139,9 +96,7 @@ struct SwitcherWindow: View {
         if viewModel.searchText.isEmpty {
             onDismiss()
         } else {
-            withAnimation(.easeOut(duration: 0.15)) {
-                viewModel.searchText = ""
-            }
+            viewModel.searchText = ""
         }
     }
     
@@ -150,30 +105,6 @@ struct SwitcherWindow: View {
             viewModel.activateWindow(window)
             onDismiss()
         }
-    }
-    
-    private func handleCommandNumber(_ number: Int) {
-        let index = number - 1
-        if index < viewModel.filteredWindows.count {
-            let window = viewModel.filteredWindows[index]
-            viewModel.activateWindow(window)
-            onDismiss()
-        }
-    }
-
-    private func handlePanelTrigger(_ press: KeyPress) -> KeyPress.Result {
-        if press.modifiers.contains(.command) ||
-            press.modifiers.contains(.option) ||
-            press.modifiers.contains(.control) {
-            return .ignored
-        }
-
-        if viewModel.activateWindowForPanelTrigger(press.characters) {
-            onDismiss()
-            return .handled
-        }
-
-        return .ignored
     }
 }
 
@@ -195,13 +126,5 @@ struct VisualEffectView: NSViewRepresentable {
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
         nsView.blendingMode = blendingMode
-    }
-}
-
-// MARK: - Preview
-
-#Preview {
-    SwitcherWindow(windowService: WindowService()) {
-        print("Dismissed")
     }
 }
