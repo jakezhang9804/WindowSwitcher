@@ -2,21 +2,22 @@ import AppKit
 import ApplicationServices
 
 final class WindowService {
-    
-    /// Get all visible windows across all applications
-    func getAllWindows() -> [WindowInfo] {
+
+    /// Get all visible windows, optionally filtered by allowed bundle IDs.
+    /// When `allowedBundleIDs` is empty, all windows are returned (no filter).
+    func getAllWindows(allowedBundleIDs: Set<String> = []) -> [WindowInfo] {
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return []
         }
-        
+
         let runningApps = NSWorkspace.shared.runningApplications
         let appsByPID = Dictionary(uniqueKeysWithValues: runningApps.compactMap { app -> (pid_t, NSRunningApplication)? in
             (app.processIdentifier, app)
         })
-        
+
         let currentBundleID = Bundle.main.bundleIdentifier
-        
+
         // Count windows per app for windowCount field
         var windowCountByPID: [pid_t: Int] = [:]
         for windowDict in windowList {
@@ -28,62 +29,72 @@ final class WindowService {
             }
             windowCountByPID[ownerPID, default: 0] += 1
         }
-        
+
         var result: [WindowInfo] = []
-        
+
         for windowDict in windowList {
             guard let ownerPID = windowDict[kCGWindowOwnerPID as String] as? pid_t else {
                 continue
             }
-            
+
+            let app = appsByPID[ownerPID]
+
             // Skip our own windows
-            if let app = appsByPID[ownerPID],
-               app.bundleIdentifier == currentBundleID {
+            if let bundleID = app?.bundleIdentifier, bundleID == currentBundleID {
                 continue
             }
-            
+
+            // Filter by allowed bundle IDs (when set is non-empty)
+            if !allowedBundleIDs.isEmpty {
+                guard let bundleID = app?.bundleIdentifier,
+                      allowedBundleIDs.contains(bundleID) else {
+                    continue
+                }
+            }
+
             guard let windowName = windowDict[kCGWindowName as String] as? String,
                   !windowName.isEmpty else {
                 continue
             }
-            
+
             guard let windowID = windowDict[kCGWindowNumber as String] as? CGWindowID,
                   let ownerName = windowDict[kCGWindowOwnerName as String] as? String else {
                 continue
             }
-            
+
             // Skip system windows (layer != 0)
             let layer = windowDict[kCGWindowLayer as String] as? Int ?? 0
             if layer != 0 { continue }
-            
+
             // Skip very small windows
             if let bounds = windowDict[kCGWindowBounds as String] as? [String: CGFloat] {
                 let width = bounds["Width"] ?? 0
                 let height = bounds["Height"] ?? 0
                 if width < 50 || height < 50 { continue }
             }
-            
-            let app = appsByPID[ownerPID]
+
             let appIcon = app?.icon
             let appPath = app?.bundleURL?.path
             let count = windowCountByPID[ownerPID] ?? 1
-            
+            let bundleIdentifier = app?.bundleIdentifier
+
             let windowInfo = WindowInfo(
                 id: windowID,
                 title: windowName,
                 appName: ownerName,
                 appPID: ownerPID,
+                appBundleID: bundleIdentifier,
                 appIcon: appIcon,
                 appPath: appPath,
                 windowCount: count
             )
-            
+
             result.append(windowInfo)
         }
-        
+
         return result
     }
-    
+
     /// Activate a specific window
     func activateWindow(_ window: WindowInfo) {
         if let app = NSRunningApplication(processIdentifier: window.appPID) {
@@ -91,22 +102,34 @@ final class WindowService {
         }
         raiseWindow(window)
     }
-    
+
+    /// Activate the frontmost window of an app by bundle ID
+    func activateApp(bundleID: String) {
+        guard let app = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == bundleID
+        }) else {
+            // App is not running; try to launch it
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+                NSWorkspace.shared.openApplication(at: url, configuration: .init())
+            }
+            return
+        }
+        app.activate()
+    }
+
     private func raiseWindow(_ window: WindowInfo) {
         let appElement = AXUIElementCreateApplication(window.appPID)
-        
         var windowsRef: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
-        
+
         guard result == .success,
               let windows = windowsRef as? [AXUIElement] else {
             return
         }
-        
+
         for axWindow in windows {
             var titleRef: CFTypeRef?
             AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
-            
             if let title = titleRef as? String, title == window.title {
                 AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
                 AXUIElementSetAttributeValue(axWindow, kAXMainAttribute as CFString, true as CFTypeRef)

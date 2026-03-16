@@ -1,27 +1,37 @@
 import SwiftUI
 import AppKit
+import AppSwitcherKit
 
-/// 主切换器面板，位于屏幕左侧，深色风格，与 TabTab 一致
+/// Main switcher panel, positioned on the left side of the screen, dark style
 struct SwitcherWindow: View {
     @StateObject private var viewModel: SwitcherViewModel
+
     let onDismiss: () -> Void
     let onOpenSettings: () -> Void
-    
-    init(windowService: WindowService, onDismiss: @escaping () -> Void, onOpenSettings: @escaping () -> Void) {
-        _viewModel = StateObject(wrappedValue: SwitcherViewModel(windowService: windowService))
+
+    init(
+        windowService: WindowService,
+        settingsStore: UserDefaultsSwitcherSettingsStore = UserDefaultsSwitcherSettingsStore(),
+        onDismiss: @escaping () -> Void,
+        onOpenSettings: @escaping () -> Void
+    ) {
+        _viewModel = StateObject(wrappedValue: SwitcherViewModel(
+            windowService: windowService,
+            settingsStore: settingsStore
+        ))
         self.onDismiss = onDismiss
         self.onOpenSettings = onOpenSettings
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
-            // 搜索框
+            // Search field
             SearchField(text: $viewModel.searchText)
                 .padding(.horizontal, 12)
                 .padding(.top, 12)
                 .padding(.bottom, 8)
-            
-            // 结果列表或空状态
+
+            // Results list or empty state
             if viewModel.filteredWindows.isEmpty {
                 EmptyStateView(searchText: viewModel.searchText)
             } else {
@@ -37,8 +47,8 @@ struct SwitcherWindow: View {
                     }
                 )
             }
-            
-            // 底部设置齿轮
+
+            // Bottom bar with settings gear
             bottomBar
         }
         .frame(maxHeight: .infinity)
@@ -64,12 +74,19 @@ struct SwitcherWindow: View {
             return .handled
         }
     }
-    
+
     // MARK: - Bottom Bar
-    
+
     private var bottomBar: some View {
         HStack {
+            if viewModel.totalCount > 0 {
+                Text("\(viewModel.filteredWindows.count) window\(viewModel.filteredWindows.count == 1 ? "" : "s")")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.3))
+            }
+
             Spacer()
+
             Button(action: { onOpenSettings() }) {
                 Image(systemName: "gearshape")
                     .font(.system(size: 14))
@@ -80,18 +97,18 @@ struct SwitcherWindow: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
     }
-    
+
     // MARK: - Background
-    
+
     private var panelBackground: some View {
         ZStack {
             VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
             Color.black.opacity(0.65)
         }
     }
-    
+
     // MARK: - Key Handlers
-    
+
     private func handleEscape() {
         if viewModel.searchText.isEmpty {
             onDismiss()
@@ -99,7 +116,7 @@ struct SwitcherWindow: View {
             viewModel.searchText = ""
         }
     }
-    
+
     private func handleReturn() {
         if let window = viewModel.selectedWindow {
             viewModel.activateWindow(window)
@@ -113,7 +130,7 @@ struct SwitcherWindow: View {
 struct VisualEffectView: NSViewRepresentable {
     let material: NSVisualEffectView.Material
     let blendingMode: NSVisualEffectView.BlendingMode
-    
+
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         view.material = material
@@ -122,7 +139,7 @@ struct VisualEffectView: NSViewRepresentable {
         view.wantsLayer = true
         return view
     }
-    
+
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
         nsView.blendingMode = blendingMode

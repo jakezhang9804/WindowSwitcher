@@ -11,14 +11,16 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/sindresorhus/KeyboardShortcuts.git", from: "2.0.0"),
-        .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.0.0")
+        .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.0.0"),
+        .package(path: "Libraries/AppSwitcherKit")
     ],
     targets: [
         .executableTarget(
             name: "WindowSwitcher",
             dependencies: [
                 "KeyboardShortcuts",
-                "Sparkle"
+                "Sparkle",
+                "AppSwitcherKit"
             ],
             path: "WindowSwitcher/Sources"
         )
