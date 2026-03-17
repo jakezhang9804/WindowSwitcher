@@ -26,71 +26,258 @@ struct SettingsView: View {
     }
 }
 
+// MARK: - Custom Section Style (replaces GroupBox for proper alignment)
+
+struct SettingsSection<Content: View>: View {
+    let title: String
+    let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 10) {
+                content
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.primary.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+}
+
 // MARK: - Preferences Tab
 
 struct PreferencesTab: View {
     @AppStorage("showMenuBarIcon") private var showMenuBarIcon = true
+    @AppStorage("panelPosition") private var panelPosition = "center"
+    @AppStorage("selectedScreenIndex") private var selectedScreenIndex = 0
+    @AppStorage("appTheme") private var appTheme = "system"
+
     @StateObject private var settingsVM = SettingsViewModel()
     @StateObject private var appConfigVM = AppConfigViewModel()
 
+    @State private var isAccessibilityGranted = false
+    @State private var isScreenRecordingGranted = false
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                // General Section
-                GroupBox(label: Text("General").font(.headline)) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Toggle("Show menu bar icon", isOn: $showMenuBarIcon)
-                        Toggle("Start at login", isOn: $settingsVM.launchAtLogin)
-                    }
-                    .padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 16) {
+                // Permissions
+                SettingsSection("Permissions") {
+                    Text("WindowSwitcher needs the following permissions to work properly:")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    PermissionRow(
+                        title: "Accessibility",
+                        description: "Required to activate and raise windows",
+                        isGranted: isAccessibilityGranted,
+                        action: {
+                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+                        }
+                    )
+
+                    PermissionRow(
+                        title: "Screen Recording",
+                        description: "Required to read window titles for search and display",
+                        isGranted: isScreenRecordingGranted,
+                        action: {
+                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                        }
+                    )
+
+                    Text("After granting permissions, you may need to restart the app.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .onAppear { checkPermissions() }
+
+                // General
+                SettingsSection("General") {
+                    Toggle("Show menu bar icon", isOn: $showMenuBarIcon)
+                    Toggle("Start at login", isOn: $settingsVM.launchAtLogin)
                 }
 
-                // Pinned Apps Section
-                GroupBox(label: Text("Pinned Apps").font(.headline)) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Select apps to pin. The switcher will only cycle through pinned apps. Optionally assign a trigger key (A-Z, 0-9) to quickly switch to a specific app via Option + Key.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .padding(.top, 4)
-
-                        // Search field
-                        TextField("Search installed apps...", text: $appConfigVM.searchText)
-                            .textFieldStyle(.roundedBorder)
-                            .padding(.vertical, 4)
-
-                        Divider()
-
-                        // App list
-                        if appConfigVM.filteredApps.isEmpty {
-                            Text("No apps found")
-                                .foregroundColor(.secondary)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 20)
-                        } else {
-                            ScrollView {
-                                LazyVStack(spacing: 0) {
-                                    ForEach(appConfigVM.filteredApps) { app in
-                                        PinnedAppRow(app: app, viewModel: appConfigVM)
-                                        Divider()
-                                    }
-                                }
-                            }
-                            .frame(height: 240)
+                // Appearance
+                SettingsSection("Appearance") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Theme")
+                            .font(.subheadline.weight(.medium))
+                        Picker("", selection: $appTheme) {
+                            Text("System").tag("system")
+                            Text("Light").tag("light")
+                            Text("Dark").tag("dark")
                         }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 240)
+                    }
 
-                        // Error message
-                        if let errorMsg = appConfigVM.errorMessage {
-                            Text(errorMsg)
-                                .font(.caption)
-                                .foregroundColor(.red)
-                                .padding(.top, 4)
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Panel Position")
+                            .font(.subheadline.weight(.medium))
+                        Picker("", selection: $panelPosition) {
+                            Text("Left").tag("left")
+                            Text("Center").tag("center")
+                            Text("Right").tag("right")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 240)
+                    }
+                }
+
+                // Show on Screen
+                SettingsSection("Show on Screen") {
+                    Text("Choose which screen the switcher panel appears on.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Picker("", selection: $selectedScreenIndex) {
+                        ForEach(Array(screenNames.enumerated()), id: \.offset) { index, name in
+                            Text(name).tag(index)
                         }
                     }
-                    .frame(maxWidth: .infinity)
+                    .labelsHidden()
+                    .frame(width: 280)
+
+                    Text("\(NSScreen.screens.count) screen\(NSScreen.screens.count == 1 ? "" : "s") detected")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                // Pinned Apps
+                SettingsSection("Pinned Apps") {
+                    Text("Select apps to pin. The switcher will only cycle through pinned apps. Optionally assign a trigger key (A-Z, 0-9) to quickly switch to a specific app via Option + Key.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    TextField("Search installed apps...", text: $appConfigVM.searchText)
+                        .textFieldStyle(.roundedBorder)
+
+                    Divider()
+
+                    if appConfigVM.filteredApps.isEmpty {
+                        Text("No apps found")
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 20)
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 0) {
+                                ForEach(appConfigVM.filteredApps) { app in
+                                    PinnedAppRow(app: app, viewModel: appConfigVM)
+                                    Divider()
+                                }
+                            }
+                        }
+                        .frame(height: 240)
+                    }
+
+                    if let errorMsg = appConfigVM.errorMessage {
+                        Text(errorMsg)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
                 }
             }
             .padding(16)
+        }
+    }
+
+    // MARK: - Screen Names
+
+    private var screenNames: [String] {
+        NSScreen.screens.enumerated().map { index, screen in
+            screen.localizedName
+        }
+    }
+
+    // MARK: - Permission Check
+
+    private func checkPermissions() {
+        // Check Accessibility: try AXIsProcessTrusted first, then functional test
+        isAccessibilityGranted = checkAccessibilityPermission()
+
+        // Check Screen Recording: try to get a window title via CGWindowList
+        isScreenRecordingGranted = checkScreenRecordingPermission()
+    }
+
+    private func checkAccessibilityPermission() -> Bool {
+        if AXIsProcessTrusted() { return true }
+
+        // Functional test: try to query the system-wide element
+        let systemWide = AXUIElementCreateSystemWide()
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &value)
+        if result == .success { return true }
+
+        // Try querying a running app's windows
+        let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
+        for app in apps.prefix(3) {
+            let appElement = AXUIElementCreateApplication(app.processIdentifier)
+            var roleRef: CFTypeRef?
+            let roleResult = AXUIElementCopyAttributeValue(appElement, kAXRoleAttribute as CFString, &roleRef)
+            if roleResult == .success { return true }
+        }
+
+        return false
+    }
+
+    private func checkScreenRecordingPermission() -> Bool {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+        // If we can read at least one window title, permission is granted
+        for window in windowList {
+            if let name = window[kCGWindowName as String] as? String, !name.isEmpty {
+                return true
+            }
+        }
+        return false
+    }
+}
+
+// MARK: - Permission Row
+
+struct PermissionRow: View {
+    let title: String
+    let description: String
+    let isGranted: Bool
+    let action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: isGranted ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .foregroundColor(isGranted ? .green : .red)
+                .font(.system(size: 18))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(description)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            if !isGranted {
+                Button("Open Settings", action: action)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
         }
     }
 }
@@ -105,7 +292,6 @@ struct PinnedAppRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            // Pin toggle
             Toggle("", isOn: Binding(
                 get: { viewModel.isPinned(app.bundleID) },
                 set: { viewModel.setPinned(app.bundleID, pinned: $0) }
@@ -113,7 +299,6 @@ struct PinnedAppRow: View {
             .toggleStyle(.checkbox)
             .labelsHidden()
 
-            // App icon
             if let icon = app.icon {
                 Image(nsImage: icon)
                     .resizable()
@@ -123,14 +308,12 @@ struct PinnedAppRow: View {
                     .frame(width: 22, height: 22)
             }
 
-            // App name
             Text(app.name)
                 .font(.system(size: 13))
                 .lineLimit(1)
 
             Spacer()
 
-            // Trigger key input (only shown when pinned)
             if viewModel.isPinned(app.bundleID) {
                 HStack(spacing: 4) {
                     Text("Option +")
@@ -189,6 +372,8 @@ struct HotkeysTab: View {
 // MARK: - About Tab
 
 struct AboutTab: View {
+    @StateObject private var updateService = UpdateService.shared
+
     var body: some View {
         VStack(spacing: 16) {
             Spacer()
@@ -201,7 +386,7 @@ struct AboutTab: View {
                 .font(.title2)
                 .fontWeight(.bold)
 
-            Text("Version 1.0.0")
+            Text("Version \(currentVersion)")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
 
@@ -210,10 +395,96 @@ struct AboutTab: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
 
+            // Update section
+            updateSection
+
             Spacer()
+
+            // Powered by Manus
+            poweredByManus
         }
         .frame(maxWidth: .infinity)
         .padding()
+    }
+
+    // MARK: - Update Section
+
+    @ViewBuilder
+    private var updateSection: some View {
+        if updateService.isChecking {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Checking for updates...")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.top, 4)
+        } else if updateService.isUpdateAvailable, let version = updateService.latestVersion {
+            VStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .foregroundColor(.green)
+                        .font(.system(size: 14))
+                    Text("Version \(version) is available!")
+                        .font(.callout)
+                        .fontWeight(.medium)
+                }
+
+                if let notes = updateService.releaseNotes, !notes.isEmpty {
+                    Text(notes)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 400)
+                }
+
+                HStack(spacing: 12) {
+                    Button("Download Update") {
+                        updateService.openDownload()
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("Skip This Version") {
+                        updateService.skipCurrentUpdate()
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .padding(.top, 4)
+        } else {
+            Button("Check for Updates") {
+                Task {
+                    await updateService.checkForUpdates()
+                }
+            }
+            .buttonStyle(.bordered)
+            .padding(.top, 4)
+
+            if let error = updateService.lastError {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundColor(.red)
+            }
+        }
+    }
+
+    // MARK: - Powered by Manus
+
+    private var poweredByManus: some View {
+        HStack(spacing: 4) {
+            Text("Powered by")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+            Link("Manus", destination: URL(string: "https://manus.im")!)
+                .font(.system(size: 11, weight: .semibold))
+        }
+        .padding(.bottom, 8)
+    }
+
+    private var currentVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
     }
 }
 
@@ -285,7 +556,6 @@ class AppConfigViewModel: ObservableObject {
             appsByBundleID[app.bundleID] = AppDisplayItem(from: app)
         }
 
-        // Also add currently running apps that might not be in /Applications
         let runningApps = NSWorkspace.shared.runningApplications
             .filter { $0.activationPolicy == .regular && $0.bundleIdentifier != nil }
         for app in runningApps {
@@ -306,7 +576,6 @@ class AppConfigViewModel: ObservableObject {
             currentSettings.allowedBundleIDs.insert(bundleID)
         } else {
             currentSettings.allowedBundleIDs.remove(bundleID)
-            // Also remove any trigger key binding
             currentSettings.appBindings.removeAll { $0.bundleID == bundleID }
         }
         saveSettings()
@@ -317,10 +586,8 @@ class AppConfigViewModel: ObservableObject {
     }
 
     func setTriggerKey(_ bundleID: String, key: String) {
-        // Remove existing binding for this bundle
         currentSettings.appBindings.removeAll { $0.bundleID == bundleID }
 
-        // Add new binding if key is not empty
         if !key.isEmpty {
             currentSettings.appBindings.append(
                 AppBinding(bundleID: bundleID, triggerKey: key)
@@ -333,9 +600,7 @@ class AppConfigViewModel: ObservableObject {
         errorMessage = nil
         do {
             try settingsStore.save(currentSettings)
-            // Reload to get normalized version
             currentSettings = settingsStore.load()
-            // Post notification so other parts of the app can react
             NotificationCenter.default.post(name: .switcherSettingsDidChange, object: nil)
         } catch {
             errorMessage = error.localizedDescription

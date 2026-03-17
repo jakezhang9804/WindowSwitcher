@@ -13,7 +13,7 @@ struct SearchField: View {
             
             ZStack(alignment: .leading) {
                 if text.isEmpty {
-                    Text("Enter to search")
+                    Text("Search windows and apps...")
                         .font(.system(size: 13))
                         .foregroundColor(.white.opacity(0.35))
                 }

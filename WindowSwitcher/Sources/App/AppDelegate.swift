@@ -42,6 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
+        // Start automatic update checks
+        UpdateService.shared.startAutomaticChecks()
+
         NSLog("[WS] All initialization complete")
     }
 
