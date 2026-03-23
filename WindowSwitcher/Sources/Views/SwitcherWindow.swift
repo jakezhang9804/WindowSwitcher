@@ -2,51 +2,90 @@ import SwiftUI
 import AppKit
 import AppSwitcherKit
 
-/// Main switcher panel view — modeled after TabTab's interaction patterns.
+/// Main switcher panel view.
 ///
 /// Interaction flow:
 /// 1. Panel opens with Option+Tab, second item pre-selected (last used window)
-/// 2. While holding Option, each Tab press cycles to the next window
-/// 3. Releasing Option confirms the selection and switches to that window
-/// 4. Type to search across all open windows AND installed apps
-/// 5. Pressing Enter activates the selected item
-/// 6. Pressing Escape clears search or dismisses the panel
+/// 2. Search bar is visible at the top but **inactive** by default (placeholder only)
+/// 3. While holding Option, each Tab press cycles to the next window
+/// 4. Releasing Option confirms the selection and switches to that window
+/// 5. Number keys 1-9 jump to the Nth item and confirm (when search is inactive)
+/// 6. Enter activates the search bar (when search is inactive) or confirms selection (when search is active)
+/// 7. Escape deactivates search (if active) or dismisses the panel
 struct SwitcherWindow: View {
-    @StateObject private var viewModel: SwitcherViewModel
+    @ObservedObject var viewModel: SwitcherViewModel
     let onDismiss: () -> Void
     let onOpenSettings: () -> Void
 
+    @FocusState private var isTextFieldFocused: Bool
+
+    @Environment(\.colorScheme) private var colorScheme
+
     init(
-        windowService: WindowService,
-        settingsStore: UserDefaultsSwitcherSettingsStore = UserDefaultsSwitcherSettingsStore(),
+        viewModel: SwitcherViewModel,
         onDismiss: @escaping () -> Void,
         onOpenSettings: @escaping () -> Void
     ) {
-        _viewModel = StateObject(wrappedValue: SwitcherViewModel(
-            windowService: windowService,
-            settingsStore: settingsStore
-        ))
+        self.viewModel = viewModel
         self.onDismiss = onDismiss
         self.onOpenSettings = onOpenSettings
     }
 
+    /// Adaptive foreground color that works in both light and dark modes
+    private var primaryText: Color {
+        colorScheme == .dark ? .white : .black
+    }
+
+    /// Secondary text color
+    private var secondaryText: Color {
+        colorScheme == .dark ? .white.opacity(0.45) : .black.opacity(0.45)
+    }
+
+    /// Tertiary / muted text color
+    private var tertiaryText: Color {
+        colorScheme == .dark ? .white.opacity(0.3) : .black.opacity(0.3)
+    }
+
+    /// Very subtle text color (for branding, hints)
+    private var subtleText: Color {
+        colorScheme == .dark ? .white.opacity(0.25) : .black.opacity(0.2)
+    }
+
+    /// Search bar background
+    private var searchBarBg: Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
+    }
+
+    /// Selected item background
+    private var selectedBg: Color {
+        colorScheme == .dark ? Color.white.opacity(0.15) : Color.black.opacity(0.08)
+    }
+
+    /// Badge background
+    private var badgeBg: Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
+    }
+
+    /// Placeholder icon background
+    private var placeholderBg: Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // Search field
-            SearchField(text: $viewModel.searchText)
-                .padding(.horizontal, 12)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
+            // Search bar — always visible at top
+            searchBar
 
             // Results list or empty state
             let items = viewModel.displayItems
             if items.isEmpty {
-                EmptyStateView(searchText: viewModel.searchText)
+                emptyState
             } else {
                 SwitcherResultsList(
                     items: items,
                     selectedIndex: $viewModel.selectedIndex,
                     searchText: viewModel.searchText,
+                    colorScheme: colorScheme,
                     onSelect: { item in
                         activateItem(item)
                     },
@@ -59,14 +98,13 @@ struct SwitcherWindow: View {
             // Bottom bar
             bottomBar
         }
-        .frame(maxHeight: .infinity)
-        .background(panelBackground)
+        .frame(width: 340)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 12))
-        .onAppear {
-            viewModel.refreshWindows()
-        }
-        .onKeyPress(.escape) {
-            handleEscape()
+        // Handle Tab and Arrow keys via SwiftUI for key repeat support
+        .onKeyPress(.tab) {
+            viewModel.selectNext()
             return .handled
         }
         .onKeyPress(.upArrow) {
@@ -77,70 +115,140 @@ struct SwitcherWindow: View {
             viewModel.selectNext()
             return .handled
         }
-        .onKeyPress(.return) {
-            handleReturn()
-            return .handled
+        // Watch for isSearchActive changes from ViewModel to focus TextField
+        .onChange(of: viewModel.isSearchActive) { _, isActive in
+            if isActive {
+                // Focus the TextField after a brief delay to let SwiftUI render it
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    isTextFieldFocused = true
+                }
+            } else {
+                isTextFieldFocused = false
+            }
         }
-        .onKeyPress(.tab) {
-            viewModel.selectNext()
-            return .handled
+    }
+
+    // MARK: - Search Bar
+
+    private var searchBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundColor(secondaryText)
+
+            if viewModel.isSearchActive {
+                // Active mode: show real TextField
+                ZStack(alignment: .leading) {
+                    if viewModel.searchText.isEmpty {
+                        Text(L10n.searchPlaceholder)
+                            .font(.system(size: 13))
+                            .foregroundColor(tertiaryText)
+                    }
+
+                    TextField("", text: $viewModel.searchText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13))
+                        .foregroundColor(primaryText)
+                        .focused($isTextFieldFocused)
+                }
+
+                if !viewModel.searchText.isEmpty {
+                    Button(action: {
+                        viewModel.searchText = ""
+                    }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(tertiaryText)
+                    }
+                    .buttonStyle(.plain)
+                    .transition(.opacity)
+                }
+            } else {
+                // Inactive mode: show placeholder text only (no TextField)
+                Text(L10n.searchInactivePlaceholder)
+                    .font(.system(size: 13))
+                    .foregroundColor(tertiaryText)
+
+                Spacer()
+            }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(searchBarBg)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 10)
+        .padding(.top, 10)
+        .padding(.bottom, 4)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if !viewModel.isSearchActive {
+                viewModel.isSearchActive = true
+            }
+        }
+    }
+
+    // MARK: - Empty State
+
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: viewModel.searchText.isEmpty ? "rectangle.stack" : "magnifyingglass")
+                .font(.system(size: 28, weight: .light))
+                .foregroundColor(tertiaryText)
+
+            Text(viewModel.searchText.isEmpty ? L10n.noWindows : L10n.noResults)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(secondaryText)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: 80)
+        .padding(.vertical, 30)
     }
 
     // MARK: - Bottom Bar
 
     private var bottomBar: some View {
-        HStack(spacing: 6) {
-            let items = viewModel.displayItems
-            if !items.isEmpty {
-                Image(systemName: "macwindow")
+        ZStack {
+            // Center: Powered by Manus (absolutely centered)
+            HStack(spacing: 3) {
+                Text(L10n.isChinese ? "基于" : "Powered by")
                     .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.3))
-                Text("\(viewModel.totalCount)")
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.3))
+                    .foregroundStyle(subtleText)
+                Text("Manus")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(tertiaryText)
             }
 
-            Spacer()
+            // Left & Right overlay
+            HStack {
+                // Left: window count (number only)
+                let items = viewModel.displayItems
+                if !items.isEmpty {
+                    Text("\(viewModel.totalCount)")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(tertiaryText)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(badgeBg)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
 
-            Text("Powered by Manus")
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.white.opacity(0.2))
+                Spacer()
 
-            Button(action: { onOpenSettings() }) {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.white.opacity(0.35))
+                // Right: settings button
+                Button(action: { onOpenSettings() }) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 12))
+                        .foregroundStyle(tertiaryText)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
     }
 
-    // MARK: - Background
-
-    private var panelBackground: some View {
-        ZStack {
-            VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
-            Color.black.opacity(0.65)
-        }
-    }
-
-    // MARK: - Key Handlers
-
-    private func handleEscape() {
-        if viewModel.searchText.isEmpty {
-            onDismiss()
-        } else {
-            viewModel.searchText = ""
-        }
-    }
-
-    private func handleReturn() {
-        viewModel.activateSelectedItem()
-        onDismiss()
-    }
+    // MARK: - Actions
 
     private func activateItem(_ item: SwitcherItem) {
         switch item {
@@ -155,83 +263,49 @@ struct SwitcherWindow: View {
     }
 }
 
-// MARK: - Visual Effect View
-
-struct VisualEffectView: NSViewRepresentable {
-    let material: NSVisualEffectView.Material
-    let blendingMode: NSVisualEffectView.BlendingMode
-
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = material
-        view.blendingMode = blendingMode
-        view.state = .active
-        view.wantsLayer = true
-        return view
-    }
-
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        nsView.material = material
-        nsView.blendingMode = blendingMode
-    }
-}
-
 // MARK: - Switcher Results List (supports mixed SwitcherItem)
 
 struct SwitcherResultsList: View {
     let items: [SwitcherItem]
     @Binding var selectedIndex: Int
     let searchText: String
+    let colorScheme: ColorScheme
     let onSelect: (SwitcherItem) -> Void
     let onHover: ((Int) -> Void)?
+
+    private var primaryText: Color {
+        colorScheme == .dark ? .white : .black
+    }
+    private var secondaryText: Color {
+        colorScheme == .dark ? .white.opacity(0.45) : .black.opacity(0.45)
+    }
+    private var tertiaryText: Color {
+        colorScheme == .dark ? .white.opacity(0.3) : .black.opacity(0.3)
+    }
+    private var selectedBg: Color {
+        colorScheme == .dark ? Color.white.opacity(0.15) : Color.black.opacity(0.08)
+    }
+    private var badgeBg: Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
+    }
+    private var placeholderBg: Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 2) {
-                    // Determine if we need section headers
-                    let windowIndices = items.indices.filter { items[$0].isWindow }
-                    let appIndices = items.indices.filter { !items[$0].isWindow }
-                    let showHeaders = !searchText.isEmpty && !windowIndices.isEmpty && !appIndices.isEmpty
-
-                    if showHeaders {
-                        sectionHeader("Open Windows")
-                    }
-
-                    ForEach(windowIndices, id: \.self) { index in
-                        let item = items[index]
-                        SwitcherResultItem(
-                            item: item,
-                            isSelected: index == selectedIndex,
-                            index: index
-                        )
-                        .id(index)
-                        .onTapGesture { onSelect(item) }
-                        .onHover { isHovered in
-                            if isHovered { onHover?(index) }
-                        }
-                    }
-
-                    if showHeaders || (!searchText.isEmpty && windowIndices.isEmpty && !appIndices.isEmpty) {
-                        sectionHeader("Applications")
-                    }
-
-                    ForEach(appIndices, id: \.self) { index in
-                        let item = items[index]
-                        SwitcherResultItem(
-                            item: item,
-                            isSelected: index == selectedIndex,
-                            index: index
-                        )
-                        .id(index)
-                        .onTapGesture { onSelect(item) }
-                        .onHover { isHovered in
-                            if isHovered { onHover?(index) }
-                        }
+                    ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                        resultItem(item: item, isSelected: index == selectedIndex, index: index)
+                            .id(index)
+                            .onTapGesture { onSelect(item) }
+                            .onHover { isHovered in
+                                if isHovered { onHover?(index) }
+                            }
                     }
                 }
                 .padding(.horizontal, 6)
-                .padding(.vertical, 4)
             }
             .onChange(of: selectedIndex) { _, newValue in
                 withAnimation(.easeOut(duration: 0.1)) {
@@ -241,28 +315,7 @@ struct SwitcherResultsList: View {
         }
     }
 
-    private func sectionHeader(_ title: String) -> some View {
-        HStack {
-            Text(title)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(.white.opacity(0.35))
-                .textCase(.uppercase)
-            Spacer()
-        }
-        .padding(.horizontal, 10)
-        .padding(.top, 6)
-        .padding(.bottom, 2)
-    }
-}
-
-// MARK: - Switcher Result Item (supports SwitcherItem)
-
-struct SwitcherResultItem: View {
-    let item: SwitcherItem
-    let isSelected: Bool
-    let index: Int
-
-    var body: some View {
+    private func resultItem(item: SwitcherItem, isSelected: Bool, index: Int) -> some View {
         HStack(spacing: 10) {
             // App icon
             if let icon = item.icon {
@@ -273,12 +326,12 @@ struct SwitcherResultItem: View {
                     .frame(width: 28, height: 28)
             } else {
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.white.opacity(0.08))
+                    .fill(placeholderBg)
                     .frame(width: 28, height: 28)
                     .overlay(
                         Image(systemName: "app")
                             .font(.system(size: 14))
-                            .foregroundColor(.white.opacity(0.3))
+                            .foregroundColor(tertiaryText)
                     )
             }
 
@@ -286,13 +339,13 @@ struct SwitcherResultItem: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.displayName)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.white)
+                    .foregroundColor(primaryText)
                     .lineLimit(1)
 
                 if let subtitle = item.subtitle, !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.45))
+                        .foregroundColor(secondaryText)
                         .lineLimit(1)
                 }
             }
@@ -303,9 +356,9 @@ struct SwitcherResultItem: View {
             if index < 9 {
                 Text("\(index + 1)")
                     .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundColor(.white.opacity(0.3))
+                    .foregroundColor(tertiaryText)
                     .frame(width: 20, height: 20)
-                    .background(Color.white.opacity(0.08))
+                    .background(badgeBg)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
             }
         }
@@ -313,7 +366,7 @@ struct SwitcherResultItem: View {
         .padding(.vertical, 7)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(isSelected ? Color.white.opacity(0.15) : Color.clear)
+                .fill(isSelected ? selectedBg : Color.clear)
         )
         .contentShape(Rectangle())
     }

@@ -62,7 +62,7 @@ struct EmptyStateView: View {
                 .font(.system(size: 28, weight: .light))
                 .foregroundColor(.white.opacity(0.3))
             
-            Text(searchText.isEmpty ? "No windows available" : "No results found")
+            Text(searchText.isEmpty ? L10n.noWindows : L10n.noResults)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(.white.opacity(0.4))
         }

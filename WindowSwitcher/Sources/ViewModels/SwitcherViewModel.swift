@@ -40,6 +40,12 @@ enum SwitcherItem: Identifiable, Equatable, Hashable {
         return false
     }
 
+    /// Whether this is a pinned app (not a running window)
+    var isPinnedApp: Bool {
+        if case .app = self { return true }
+        return false
+    }
+
     static func == (lhs: SwitcherItem, rhs: SwitcherItem) -> Bool {
         lhs.id == rhs.id
     }
@@ -53,15 +59,35 @@ enum SwitcherItem: Identifiable, Equatable, Hashable {
 class SwitcherViewModel: ObservableObject {
     @Published var searchText: String = ""
     @Published var selectedIndex: Int = 0
+    @Published var isSearchActive: Bool = false
     @Published private(set) var windows: [WindowInfo] = []
 
     /// All installed apps (loaded once, cached)
     private var installedApps: [InstalledAppItem] = []
 
-    /// Combined display items: windows first, then matching installed apps
+    /// Pinned (allowed) bundle IDs from settings
+    private var pinnedBundleIDs: Set<String> = []
+
+    /// Combined display items:
+    /// - When no search: running windows first, then pinned apps that are NOT running
+    /// - When searching: matching windows first, then matching installed apps
     var displayItems: [SwitcherItem] {
         if searchText.isEmpty {
-            return windows.map { .window($0) }
+            // Running windows
+            var items: [SwitcherItem] = windows.map { .window($0) }
+
+            // Bundle IDs of running windows
+            let runningBundleIDs = Set(windows.compactMap { $0.appBundleID })
+
+            // Pinned apps that are NOT currently running — show them at the bottom
+            let pinnedNotRunning = installedApps.filter { app in
+                pinnedBundleIDs.contains(app.bundleID) && !runningBundleIDs.contains(app.bundleID)
+            }
+            items += pinnedNotRunning.map { app in
+                .app(bundleID: app.bundleID, name: app.name, icon: app.icon, path: app.path)
+            }
+
+            return items
         }
 
         let query = searchText.lowercased().trimmingCharacters(in: .whitespaces)
@@ -113,6 +139,12 @@ class SwitcherViewModel: ObservableObject {
 
     var totalCount: Int { windows.count }
 
+    /// Whether there are pinned apps that are not running (for section header display)
+    var hasPinnedNotRunning: Bool {
+        let runningBundleIDs = Set(windows.compactMap { $0.appBundleID })
+        return pinnedBundleIDs.contains(where: { !runningBundleIDs.contains($0) })
+    }
+
     var selectedItem: SwitcherItem? {
         let items = displayItems
         guard selectedIndex >= 0 && selectedIndex < items.count else { return nil }
@@ -137,6 +169,10 @@ class SwitcherViewModel: ObservableObject {
         // Load installed apps cache
         loadInstalledApps()
 
+        // Load pinned bundle IDs from settings
+        let settings = settingsStore.load()
+        self.pinnedBundleIDs = settings.allowedBundleIDs
+
         // Reset selection when search text changes
         $searchText
             .debounce(for: .milliseconds(50), scheduler: RunLoop.main)
@@ -148,21 +184,25 @@ class SwitcherViewModel: ObservableObject {
 
     func refreshWindows() {
         let settings = settingsStore.load()
+        self.pinnedBundleIDs = settings.allowedBundleIDs
+        // Default list: only show windows from pinned apps (when pinned list is non-empty)
         windows = windowService.getAllWindows(allowedBundleIDs: settings.allowedBundleIDs)
         // TabTab behavior: default select the second item (previous window)
         selectedIndex = windows.count > 1 ? 1 : 0
         searchText = ""
+        isSearchActive = false
     }
 
     func selectNext() {
-        let maxIndex = displayItems.count - 1
-        if maxIndex >= 0 {
-            selectedIndex = min(selectedIndex + 1, maxIndex)
-        }
+        let count = displayItems.count
+        guard count > 0 else { return }
+        selectedIndex = (selectedIndex + 1) % count
     }
 
     func selectPrevious() {
-        selectedIndex = max(selectedIndex - 1, 0)
+        let count = displayItems.count
+        guard count > 0 else { return }
+        selectedIndex = (selectedIndex - 1 + count) % count
     }
 
     func activateWindow(_ window: WindowInfo) {

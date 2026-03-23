@@ -9,24 +9,24 @@ struct SettingsView: View {
         TabView {
             PreferencesTab()
                 .tabItem {
-                    Label("Preferences", systemImage: "gearshape")
+                    Label(L10n.preferencesTab, systemImage: "gearshape")
                 }
 
             HotkeysTab()
                 .tabItem {
-                    Label("Hotkeys", systemImage: "command")
+                    Label(L10n.hotkeysTab, systemImage: "command")
                 }
 
             AboutTab()
                 .tabItem {
-                    Label("About", systemImage: "info.circle")
+                    Label(L10n.aboutTab, systemImage: "info.circle")
                 }
         }
         .frame(width: 560, height: 520)
     }
 }
 
-// MARK: - Custom Section Style (replaces GroupBox for proper alignment)
+// MARK: - Custom Section Style
 
 struct SettingsSection<Content: View>: View {
     let title: String
@@ -58,6 +58,7 @@ struct SettingsSection<Content: View>: View {
 struct PreferencesTab: View {
     @AppStorage("showMenuBarIcon") private var showMenuBarIcon = true
     @AppStorage("panelPosition") private var panelPosition = "center"
+    @AppStorage("screenMode") private var screenMode = "focused"
     @AppStorage("selectedScreenIndex") private var selectedScreenIndex = 0
     @AppStorage("appTheme") private var appTheme = "system"
 
@@ -71,14 +72,14 @@ struct PreferencesTab: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 // Permissions
-                SettingsSection("Permissions") {
-                    Text("WindowSwitcher needs the following permissions to work properly:")
+                SettingsSection(L10n.permissionsTitle) {
+                    Text(L10n.permissionsDescription)
                         .font(.caption)
                         .foregroundColor(.secondary)
 
                     PermissionRow(
-                        title: "Accessibility",
-                        description: "Required to activate and raise windows",
+                        title: L10n.accessibilityTitle,
+                        description: L10n.accessibilityDescription,
                         isGranted: isAccessibilityGranted,
                         action: {
                             NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
@@ -86,89 +87,99 @@ struct PreferencesTab: View {
                     )
 
                     PermissionRow(
-                        title: "Screen Recording",
-                        description: "Required to read window titles for search and display",
+                        title: L10n.screenRecordingTitle,
+                        description: L10n.screenRecordingDescription,
                         isGranted: isScreenRecordingGranted,
                         action: {
                             NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
                         }
                     )
 
-                    Text("After granting permissions, you may need to restart the app.")
+                    Text(L10n.permissionsRestart)
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 .onAppear { checkPermissions() }
 
                 // General
-                SettingsSection("General") {
-                    Toggle("Show menu bar icon", isOn: $showMenuBarIcon)
-                    Toggle("Start at login", isOn: $settingsVM.launchAtLogin)
+                SettingsSection(L10n.generalTitle) {
+                    Toggle(L10n.showMenuBarIcon, isOn: $showMenuBarIcon)
+                    Toggle(L10n.startAtLogin, isOn: $settingsVM.launchAtLogin)
                 }
 
                 // Appearance
-                SettingsSection("Appearance") {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Theme")
+                SettingsSection(L10n.appearanceTitle) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(L10n.themeTitle)
                             .font(.subheadline.weight(.medium))
                         Picker("", selection: $appTheme) {
-                            Text("System").tag("system")
-                            Text("Light").tag("light")
-                            Text("Dark").tag("dark")
+                            Text(L10n.themeSystem).tag("system")
+                            Text(L10n.themeLight).tag("light")
+                            Text(L10n.themeDark).tag("dark")
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
-                        .frame(width: 240)
                     }
 
                     Divider()
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Panel Position")
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(L10n.panelPositionTitle)
                             .font(.subheadline.weight(.medium))
                         Picker("", selection: $panelPosition) {
-                            Text("Left").tag("left")
-                            Text("Center").tag("center")
-                            Text("Right").tag("right")
+                            Text(L10n.positionLeft).tag("left")
+                            Text(L10n.positionCenter).tag("center")
+                            Text(L10n.positionRight).tag("right")
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
-                        .frame(width: 240)
                     }
                 }
 
                 // Show on Screen
-                SettingsSection("Show on Screen") {
-                    Text("Choose which screen the switcher panel appears on.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                SettingsSection(L10n.showOnScreenTitle) {
+                    Picker("", selection: $screenMode) {
+                        Text(L10n.screenModeFocused).tag("focused")
+                        Text(L10n.screenModeFixed).tag("fixed")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
 
-                    Picker("", selection: $selectedScreenIndex) {
-                        ForEach(Array(screenNames.enumerated()), id: \.offset) { index, name in
-                            Text(name).tag(index)
+                    if screenMode == "fixed" {
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(L10n.fixedScreenDescription)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+
+                            Picker("", selection: $selectedScreenIndex) {
+                                ForEach(Array(screenNames.enumerated()), id: \.offset) { index, name in
+                                    Text(name).tag(index)
+                                }
+                            }
+                            .labelsHidden()
+
+                            Text(L10n.screensDetected(NSScreen.screens.count))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
                     }
-                    .labelsHidden()
-                    .frame(width: 280)
-
-                    Text("\(NSScreen.screens.count) screen\(NSScreen.screens.count == 1 ? "" : "s") detected")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
                 }
 
                 // Pinned Apps
-                SettingsSection("Pinned Apps") {
-                    Text("Select apps to pin. The switcher will only cycle through pinned apps. Optionally assign a trigger key (A-Z, 0-9) to quickly switch to a specific app via Option + Key.")
+                SettingsSection(L10n.pinnedAppsTitle) {
+                    Text(L10n.pinnedAppsDescription)
                         .font(.caption)
                         .foregroundColor(.secondary)
 
-                    TextField("Search installed apps...", text: $appConfigVM.searchText)
+                    TextField(L10n.searchAppsPlaceholder, text: $appConfigVM.searchText)
                         .textFieldStyle(.roundedBorder)
 
                     Divider()
 
                     if appConfigVM.filteredApps.isEmpty {
-                        Text("No apps found")
+                        Text(L10n.noAppsFound)
                             .foregroundColor(.secondary)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 20)
@@ -206,23 +217,18 @@ struct PreferencesTab: View {
     // MARK: - Permission Check
 
     private func checkPermissions() {
-        // Check Accessibility: try AXIsProcessTrusted first, then functional test
         isAccessibilityGranted = checkAccessibilityPermission()
-
-        // Check Screen Recording: try to get a window title via CGWindowList
         isScreenRecordingGranted = checkScreenRecordingPermission()
     }
 
     private func checkAccessibilityPermission() -> Bool {
         if AXIsProcessTrusted() { return true }
 
-        // Functional test: try to query the system-wide element
         let systemWide = AXUIElementCreateSystemWide()
         var value: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &value)
         if result == .success { return true }
 
-        // Try querying a running app's windows
         let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
         for app in apps.prefix(3) {
             let appElement = AXUIElementCreateApplication(app.processIdentifier)
@@ -239,7 +245,6 @@ struct PreferencesTab: View {
         guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return false
         }
-        // If we can read at least one window title, permission is granted
         for window in windowList {
             if let name = window[kCGWindowName as String] as? String, !name.isEmpty {
                 return true
@@ -274,7 +279,7 @@ struct PermissionRow: View {
             Spacer()
 
             if !isGranted {
-                Button("Open Settings", action: action)
+                Button(L10n.openSettings, action: action)
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }
@@ -348,20 +353,20 @@ struct HotkeysTab: View {
     var body: some View {
         Form {
             Section {
-                KeyboardShortcuts.Recorder("Show Switcher:", name: .showSwitcher)
+                KeyboardShortcuts.Recorder(L10n.showSwitcherLabel, name: .showSwitcher)
             } header: {
-                Text("Keyboard Shortcuts")
+                Text(L10n.keyboardShortcutsTitle)
             }
 
             Section {
-                Text("Press the shortcut key to quickly switch between windows.")
+                Text(L10n.hotkeysTip1)
                     .font(.caption)
                     .foregroundColor(.secondary)
-                Text("You can also assign per-app trigger keys in Preferences > Pinned Apps. Use Option + [Key] to switch directly to a specific app.")
+                Text(L10n.hotkeysTip2)
                     .font(.caption)
                     .foregroundColor(.secondary)
             } header: {
-                Text("Tips")
+                Text(L10n.tipsTitle)
             }
         }
         .formStyle(.grouped)
@@ -390,7 +395,7 @@ struct AboutTab: View {
                 .font(.subheadline)
                 .foregroundColor(.secondary)
 
-            Text("A fast and native window switcher for macOS")
+            Text(L10n.aboutDescription)
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -415,7 +420,7 @@ struct AboutTab: View {
             HStack(spacing: 8) {
                 ProgressView()
                     .controlSize(.small)
-                Text("Checking for updates...")
+                Text(L10n.checkingForUpdates)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -426,7 +431,7 @@ struct AboutTab: View {
                     Image(systemName: "arrow.down.circle.fill")
                         .foregroundColor(.green)
                         .font(.system(size: 14))
-                    Text("Version \(version) is available!")
+                    Text(L10n.updateAvailable(version))
                         .font(.callout)
                         .fontWeight(.medium)
                 }
@@ -441,12 +446,12 @@ struct AboutTab: View {
                 }
 
                 HStack(spacing: 12) {
-                    Button("Download Update") {
+                    Button(L10n.downloadUpdate) {
                         updateService.openDownload()
                     }
                     .buttonStyle(.borderedProminent)
 
-                    Button("Skip This Version") {
+                    Button(L10n.skipVersion) {
                         updateService.skipCurrentUpdate()
                     }
                     .buttonStyle(.bordered)
@@ -454,7 +459,7 @@ struct AboutTab: View {
             }
             .padding(.top, 4)
         } else {
-            Button("Check for Updates") {
+            Button(L10n.checkForUpdates) {
                 Task {
                     await updateService.checkForUpdates()
                 }
@@ -474,11 +479,12 @@ struct AboutTab: View {
 
     private var poweredByManus: some View {
         HStack(spacing: 4) {
-            Text("Powered by")
+            Text(L10n.isChinese ? "基于" : "Powered by")
                 .font(.system(size: 11))
                 .foregroundColor(.secondary)
             Link("Manus", destination: URL(string: "https://manus.im")!)
                 .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.accentColor)
         }
         .padding(.bottom, 8)
     }

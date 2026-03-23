@@ -9,16 +9,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Must keep a strong reference to statusItem, otherwise the menu bar icon will disappear
     private var statusItem: NSStatusItem!
-    private var switcherPanel: NSPanel?
+    private var switcherPanel: KeyablePanel?
     private var settingsWindowController: NSWindowController?
 
     private let windowService = WindowService()
     private let settingsStore = UserDefaultsSwitcherSettingsStore()
     private let hotkeyService = HotkeyService()
 
+    /// The SwiftUI view model — kept here so HotkeyService can drive Tab cycling
+    private var switcherViewModel: SwitcherViewModel?
+
     /// Event monitors for Option+Key app bindings
     private var localKeyMonitor: Any?
     private var globalKeyMonitor: Any?
+
+    /// The hosting view for the current switcher panel content
+    private var currentHostingView: NSHostingView<SwitcherWindow>?
 
     // MARK: - Lifecycle
 
@@ -72,19 +78,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
 
-        let showItem = NSMenuItem(title: "Show Switcher", action: #selector(showSwitcherAction), keyEquivalent: "")
+        let showItem = NSMenuItem(title: L10n.showSwitcher, action: #selector(showSwitcherAction), keyEquivalent: "")
         showItem.target = self
         menu.addItem(showItem)
 
         menu.addItem(.separator())
 
-        let prefsItem = NSMenuItem(title: "Preferences...", action: #selector(openPreferences), keyEquivalent: ",")
+        let prefsItem = NSMenuItem(title: L10n.preferences + "...", action: #selector(openPreferences), keyEquivalent: ",")
         prefsItem.target = self
         menu.addItem(prefsItem)
 
         menu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "Quit WindowSwitcher", action: #selector(quitApp), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: L10n.quit + " WindowSwitcher", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
@@ -92,15 +98,102 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSLog("[WS] Status bar item created")
     }
 
-    // MARK: - Global Hotkey (Show Switcher)
+    // MARK: - Global Hotkey (Option+Tab)
 
     private func setupGlobalHotkey() {
+        // When Option+Tab is pressed → show the switcher (only if not already visible)
         hotkeyService.onShowSwitcher { [weak self] in
-            NSLog("[WS] Hotkey triggered")
+            NSLog("[WS] Option+Tab triggered — showing switcher")
             DispatchQueue.main.async {
-                self?.toggleSwitcher()
+                self?.showSwitcher()
             }
         }
+
+        // When Option is released while switcher is visible → confirm selection and hide
+        hotkeyService.onConfirmSelection { [weak self] in
+            NSLog("[WS] Confirming selection")
+            DispatchQueue.main.async {
+                self?.confirmAndHideSwitcher()
+            }
+        }
+
+        // Tab cycling — used by HotkeyService when Option+Tab is held
+        hotkeyService.onTabPress { [weak self] in
+            NSLog("[WS] Tab — cycling next")
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.switcherViewModel?.selectNext()
+                }
+            }
+        }
+
+        // Shift+Tab → cycle to previous item
+        hotkeyService.onShiftTabPress { [weak self] in
+            NSLog("[WS] Shift+Tab — cycling previous")
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.switcherViewModel?.selectPrevious()
+                }
+            }
+        }
+
+        // Provide search active state to HotkeyService via ViewModel
+        hotkeyService.isSearchActiveProvider = { [weak self] in
+            return MainActor.assumeIsolated {
+                self?.switcherViewModel?.isSearchActive ?? false
+            }
+        }
+
+        // Enter when search inactive → activate search bar via ViewModel
+        hotkeyService.onActivateSearch { [weak self] in
+            NSLog("[WS] Activating search bar")
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.switcherViewModel?.isSearchActive = true
+                }
+            }
+        }
+
+        // Escape when search active → deactivate search bar via ViewModel
+        hotkeyService.onDeactivateSearch { [weak self] in
+            NSLog("[WS] Deactivating search bar")
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.switcherViewModel?.isSearchActive = false
+                    self?.switcherViewModel?.searchText = ""
+                }
+            }
+        }
+
+        // Number key 1-9 → jump to Nth item and confirm
+        hotkeyService.onNumberPress { [weak self] number in
+            NSLog("[WS] Number \(number) — jumping to item")
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let index = number - 1 // 1-based to 0-based
+                MainActor.assumeIsolated {
+                    let items = self.switcherViewModel?.displayItems ?? []
+                    NSLog("[WS] Number \(number): index=\(index), totalItems=\(items.count)")
+                    if index >= 0 && index < items.count {
+                        let item = items[index]
+                        NSLog("[WS] Number \(number): selecting item=\(item.displayName), id=\(item.id), isWindow=\(item.isWindow)")
+                        self.switcherViewModel?.selectedIndex = index
+                        self.confirmAndHideSwitcher()
+                    } else {
+                        NSLog("[WS] Number \(number): index \(index) out of range (\(items.count) items)")
+                    }
+                }
+            }
+        }
+
+        // Escape when search not active → dismiss panel
+        hotkeyService.onEscape { [weak self] in
+            NSLog("[WS] Escape pressed — dismissing")
+            DispatchQueue.main.async {
+                self?.hideSwitcher()
+            }
+        }
+
         NSLog("[WS] Global hotkey registered")
     }
 
@@ -137,6 +230,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Returns true if the event was handled.
     @discardableResult
     private func handleAppBindingKeyEvent(_ event: NSEvent) -> Bool {
+        // When the switcher panel is active, let HotkeyService handle all keys
+        if hotkeyService.isSwitcherActive { return false }
+
         // Only respond to Option (without Command/Control/Shift)
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard flags == .option else { return false }
@@ -145,6 +241,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               !characters.isEmpty else { return false }
 
         let key = characters.uppercased()
+
+        // Don't handle Tab here — that's for the switcher
+        if event.keyCode == 48 { return false } // kVK_Tab = 48
 
         let settings = settingsStore.load()
         guard let bundleID = settings.bundleID(for: key) else { return false }
@@ -167,29 +266,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Switcher Panel
 
-    private func toggleSwitcher() {
-        if let panel = switcherPanel, panel.isVisible {
-            hideSwitcher()
-        } else {
-            showSwitcher()
-        }
-    }
-
     @objc private func showSwitcherAction() {
         showSwitcher()
     }
 
     private func showSwitcher() {
+        // If already visible, don't recreate
+        if let panel = switcherPanel, panel.isVisible {
+            NSLog("[WS] Switcher already visible, ignoring show request")
+            return
+        }
+
         if switcherPanel == nil {
             createSwitcherPanel()
         }
 
         guard let panel = switcherPanel else { return }
 
+        // Create a shared view model so HotkeyService can drive Tab cycling
+        let vm = MainActor.assumeIsolated {
+            SwitcherViewModel(
+                windowService: windowService,
+                settingsStore: settingsStore
+            )
+        }
+        self.switcherViewModel = vm
+
+        // Refresh window list BEFORE creating the view
+        MainActor.assumeIsolated {
+            vm.refreshWindows()
+        }
+
         // Recreate content view each time to refresh window list
         let contentView = SwitcherWindow(
-            windowService: windowService,
-            settingsStore: settingsStore,
+            viewModel: vm,
             onDismiss: { [weak self] in
                 self?.hideSwitcher()
             },
@@ -201,20 +311,134 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         )
 
-        panel.contentView = NSHostingView(rootView: contentView)
-        positionPanelOnLeft(panel)
-        panel.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        // Create NSVisualEffectView as the container for blur background
+        let visualEffectView = NSVisualEffectView()
+        visualEffectView.material = .hudWindow
+        visualEffectView.blendingMode = .behindWindow
+        visualEffectView.state = .active
+        visualEffectView.wantsLayer = true
+        visualEffectView.layer?.cornerRadius = 12
+        visualEffectView.layer?.masksToBounds = true
 
-        NSLog("[WS] Switcher shown")
+        // Create NSHostingView with SwiftUI content (transparent background)
+        let hostingView = NSHostingView(rootView: contentView)
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        // Remove default opaque background to prevent white border around corners
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = .clear
+        self.currentHostingView = hostingView
+
+        // Add hostingView as subview of visualEffectView
+        visualEffectView.addSubview(hostingView)
+        NSLayoutConstraint.activate([
+            hostingView.topAnchor.constraint(equalTo: visualEffectView.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: visualEffectView.bottomAnchor),
+            hostingView.leadingAnchor.constraint(equalTo: visualEffectView.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: visualEffectView.trailingAnchor)
+        ])
+
+        panel.contentView = visualEffectView
+
+        // Calculate panel height based on item count
+        // Search bar is always visible now (like TabTab)
+        let windowCount = MainActor.assumeIsolated { vm.displayItems.count }
+        let panelHeight = calculatePanelHeight(itemCount: windowCount)
+
+        NSLog("[WS] panelHeight=\(panelHeight), items=\(windowCount)")
+
+        // Position panel based on user settings
+        positionPanel(panel, height: panelHeight)
+
+        // Apply theme setting
+        applyTheme(to: panel)
+
+        // Make key window (receives keyboard events) but do NOT activate the app.
+        // `.nonactivatingPanel` ensures the app doesn't become active,
+        // so other apps remain in the foreground.
+        panel.makeKeyAndOrderFront(nil)
+
+        // Notify hotkey service that switcher is now active
+        hotkeyService.switcherDidShow()
+
+        NSLog("[WS] Switcher shown (key window, non-activating, \(windowCount) items)")
+    }
+
+    /// Calculate panel height based on content.
+    /// Search bar is always visible (like TabTab).
+    private func calculatePanelHeight(itemCount: Int) -> CGFloat {
+        // Search bar: padding-top 10 + content (padding-v 8*2 = 16 + text ~16 = 32) + padding-bottom 4 = 46px
+        let searchBarHeight: CGFloat = 46
+
+        // Item: icon 28px + vertical padding 7*2 = 42px
+        // Spacing between items: 2px
+        let itemHeight: CGFloat = 42
+        let itemSpacing: CGFloat = 2
+
+        // List vertical padding: 4px top + 4px bottom = 8px
+        let listPadding: CGFloat = 8
+
+        // Bottom bar: padding 8*2 + content ~16px = 32px
+        let bottomBarHeight: CGFloat = 32
+
+        let itemsTotal: CGFloat
+        if itemCount > 0 {
+            itemsTotal = CGFloat(itemCount) * itemHeight + CGFloat(itemCount - 1) * itemSpacing
+        } else {
+            itemsTotal = 80  // empty state min height
+        }
+
+        let totalHeight = searchBarHeight + listPadding + itemsTotal + bottomBarHeight
+
+        // Clamp to screen bounds
+        let maxHeight: CGFloat = min(NSScreen.main?.visibleFrame.height ?? 700, 700)
+        return min(max(totalHeight, 150), maxHeight)
+    }
+
+    /// Handle Escape key — context-dependent behavior
+    private func handleEscape() {
+        let hasSearchText = MainActor.assumeIsolated {
+            !(switcherViewModel?.searchText.isEmpty ?? true)
+        }
+        if hasSearchText {
+            // Clear search text first
+            MainActor.assumeIsolated {
+                switcherViewModel?.searchText = ""
+            }
+            NSLog("[WS] Escape — cleared search text")
+        } else {
+            // Search text is empty — dismiss panel
+            hideSwitcher()
+        }
+    }
+
+    /// Confirm the current selection and hide the switcher
+    private func confirmAndHideSwitcher() {
+        // Activate the currently selected item
+        MainActor.assumeIsolated {
+            if let item = switcherViewModel?.selectedItem {
+                NSLog("[WS] Confirming: activating item=\(item.displayName), id=\(item.id), isWindow=\(item.isWindow)")
+            } else {
+                NSLog("[WS] Confirming: no selected item!")
+            }
+            switcherViewModel?.activateSelectedItem()
+        }
+
+        // Small delay to let the activation happen before hiding
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            self?.hideSwitcher()
+        }
     }
 
     private func hideSwitcher() {
         switcherPanel?.orderOut(nil)
+        switcherViewModel = nil
+        currentHostingView = nil
+        hotkeyService.switcherDidHide()
+        NSLog("[WS] Switcher hidden")
     }
 
     private func createSwitcherPanel() {
-        let panel = NSPanel(
+        let panel = KeyablePanel(
             contentRect: NSRect(x: 0, y: 0, width: 340, height: 600),
             styleMask: [.nonactivatingPanel, .fullSizeContentView, .borderless],
             backing: .buffered,
@@ -231,20 +455,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.isOpaque = false
         panel.hasShadow = true
         panel.animationBehavior = .utilityWindow
-        panel.hidesOnDeactivate = true
+        panel.hidesOnDeactivate = false
+        panel.becomesKeyOnlyIfNeeded = false  // Allow becoming key immediately
+
+        // When the panel loses focus (user clicked elsewhere) while search is active, close the panel
+        panel.onResignKey = { [weak self] in
+            guard let self = self else { return }
+            let searchActive = MainActor.assumeIsolated {
+                self.switcherViewModel?.isSearchActive ?? false
+            }
+            if searchActive {
+                NSLog("[WS] Panel lost focus while search active — dismissing")
+                DispatchQueue.main.async {
+                    self.hideSwitcher()
+                }
+            }
+        }
 
         switcherPanel = panel
     }
 
-    private func positionPanelOnLeft(_ panel: NSPanel) {
-        guard let screen = NSScreen.main else { return }
+    /// Position the panel based on user settings (left / center / right) and screen mode (focused / fixed)
+    private func positionPanel(_ panel: NSPanel, height: CGFloat) {
+        let position = UserDefaults.standard.string(forKey: "panelPosition") ?? "center"
+        let screenMode = UserDefaults.standard.string(forKey: "screenMode") ?? "focused"
+
+        let screen: NSScreen
+        if screenMode == "fixed" {
+            let selectedIndex = UserDefaults.standard.integer(forKey: "selectedScreenIndex")
+            let screens = NSScreen.screens
+            if selectedIndex >= 0 && selectedIndex < screens.count {
+                screen = screens[selectedIndex]
+            } else {
+                screen = NSScreen.main ?? NSScreen.screens.first!
+            }
+        } else {
+            // "focused" mode: use the screen that currently has the mouse cursor
+            let mouseLocation = NSEvent.mouseLocation
+            screen = NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) }) ?? NSScreen.main ?? NSScreen.screens.first!
+        }
+
         let screenFrame = screen.visibleFrame
         let panelWidth: CGFloat = 340
-        let panelHeight: CGFloat = min(screenFrame.height - 40, 700)
-        let x = screenFrame.minX + 8
-        let y = screenFrame.midY - panelHeight / 2
 
-        panel.setFrame(NSRect(x: x, y: y, width: panelWidth, height: panelHeight), display: true)
+        let x: CGFloat
+        switch position {
+        case "left":
+            x = screenFrame.minX + 8
+        case "right":
+            x = screenFrame.maxX - panelWidth - 8
+        default: // center
+            x = screenFrame.midX - panelWidth / 2
+        }
+
+        let y = screenFrame.midY - height / 2
+        panel.setFrame(NSRect(x: x, y: y, width: panelWidth, height: height), display: true)
+    }
+
+    /// Apply theme setting to the panel
+    private func applyTheme(to panel: NSPanel) {
+        let theme = UserDefaults.standard.string(forKey: "appTheme") ?? "system"
+        switch theme {
+        case "light":
+            panel.appearance = NSAppearance(named: .aqua)
+        case "dark":
+            panel.appearance = NSAppearance(named: .darkAqua)
+        default: // system
+            panel.appearance = nil
+        }
     }
 
     // MARK: - Preferences
@@ -258,7 +536,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let settingsView = SettingsView()
             let hostingController = NSHostingController(rootView: settingsView)
             let window = NSWindow(contentViewController: hostingController)
-            window.title = "WindowSwitcher Preferences"
+            window.title = "WindowSwitcher " + L10n.preferences
             window.styleMask = [.titled, .closable]
             window.setContentSize(NSSize(width: 560, height: 520))
             window.center()
@@ -303,4 +581,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension KeyboardShortcuts.Name {
     static let showSwitcher = Self("showSwitcher", default: .init(.tab, modifiers: [.option]))
+}
+
+// MARK: - Notification Names
+
+extension Notification.Name {
+    /// Posted when the user releases the Option key to confirm the current selection
+    static let switcherConfirmSelection = Notification.Name("switcherConfirmSelection")
 }
