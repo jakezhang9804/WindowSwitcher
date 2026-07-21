@@ -50,6 +50,14 @@ final class HotkeyService {
     /// Interval between repeats (matches macOS key repeat rate)
     private let repeatInterval: TimeInterval = 0.07
 
+    /// Fallback poll timer that watches the hardware modifier state while the
+    /// switcher is shown. flagsChanged delivery via NSEvent monitors is not
+    /// reliable: global monitors go silent under secure event input, and a
+    /// non-activating key panel is not guaranteed to receive modifier events
+    /// locally. Release-to-confirm must not depend on event delivery alone.
+    private var modifierPollTimer: Timer?
+    private let modifierPollInterval: TimeInterval = 0.03
+
     /// Track whether the switcher is currently shown
     private(set) var isSwitcherActive = false
 
@@ -63,6 +71,21 @@ final class HotkeyService {
     private var hotkeyModifiers: NSEvent.ModifierFlags {
         let modifiers = KeyboardShortcuts.getShortcut(for: .showSwitcher)?.modifiers ?? .option
         return modifiers.intersection(.deviceIndependentFlagsMask)
+    }
+
+    /// The modifiers currently held according to the event system's session
+    /// state. Unlike NSEvent.modifierFlags (stale for background apps) and
+    /// NSEvent monitors (delivery can silently stop), this queries the actual
+    /// key state and always works.
+    private static func currentHeldModifiers() -> NSEvent.ModifierFlags {
+        let cgFlags = CGEventSource.flagsState(.combinedSessionState)
+        var flags: NSEvent.ModifierFlags = []
+        if cgFlags.contains(.maskAlternate) { flags.insert(.option) }
+        if cgFlags.contains(.maskShift) { flags.insert(.shift) }
+        if cgFlags.contains(.maskControl) { flags.insert(.control) }
+        if cgFlags.contains(.maskCommand) { flags.insert(.command) }
+        if cgFlags.contains(.maskSecondaryFn) { flags.insert(.function) }
+        return flags
     }
 
     func onShowSwitcher(_ handler: @escaping () -> Void) {
@@ -127,9 +150,9 @@ final class HotkeyService {
     func switcherDidShow() {
         isSwitcherActive = true
         let modifiers = hotkeyModifiers
-        isConfirmArmed = !modifiers.isEmpty
-            && NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(modifiers)
+        isConfirmArmed = !modifiers.isEmpty && Self.currentHeldModifiers().contains(modifiers)
         startMonitors()
+        startModifierPollTimer()
         NSLog("[WS][Hotkey] switcherDidShow — monitors started (confirmArmed=\(isConfirmArmed))")
     }
 
@@ -138,6 +161,7 @@ final class HotkeyService {
         isSwitcherActive = false
         isConfirmArmed = false
         stopTabRepeatTimer()
+        stopModifierPollTimer()
         stopMonitors()
         NSLog("[WS][Hotkey] switcherDidHide — monitors stopped")
     }
@@ -169,6 +193,25 @@ final class HotkeyService {
     private func stopTabRepeatTimer() {
         tabRepeatTimer?.invalidate()
         tabRepeatTimer = nil
+    }
+
+    // MARK: - Modifier Poll Timer (release-to-confirm fallback)
+
+    private func startModifierPollTimer() {
+        stopModifierPollTimer()
+
+        let timer = Timer(timeInterval: modifierPollInterval, repeats: true) { [weak self] _ in
+            guard let self = self, self.isSwitcherActive else { return }
+            self.updateConfirmState(heldFlags: Self.currentHeldModifiers(), source: "poll")
+        }
+        timer.tolerance = 0.01
+        RunLoop.main.add(timer, forMode: .common)
+        modifierPollTimer = timer
+    }
+
+    private func stopModifierPollTimer() {
+        modifierPollTimer?.invalidate()
+        modifierPollTimer = nil
     }
 
     // MARK: - NSEvent Monitors (flags, Enter, Escape, numbers)
@@ -211,14 +254,23 @@ final class HotkeyService {
     }
 
     private func handleFlagsChanged(_ event: NSEvent) {
+        updateConfirmState(
+            heldFlags: event.modifierFlags.intersection(.deviceIndependentFlagsMask),
+            source: "monitor"
+        )
+    }
+
+    /// Shared release-to-confirm logic, driven by both the flagsChanged
+    /// monitors (instant) and the poll timer (fallback). Runs on the main
+    /// thread in both cases, so arming state needs no synchronization.
+    private func updateConfirmState(heldFlags: NSEvent.ModifierFlags, source: String) {
         guard isSwitcherActive else { return }
 
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let modifiers = hotkeyModifiers
         guard !modifiers.isEmpty else { return }
 
         // Hotkey modifiers are (still) held — arm the release-to-confirm behavior
-        if flags.contains(modifiers) {
+        if heldFlags.contains(modifiers) {
             isConfirmArmed = true
             return
         }
@@ -234,12 +286,12 @@ final class HotkeyService {
 
         // Only auto-confirm if search is NOT active
         if !searchActive {
-            NSLog("[WS][Hotkey] Hotkey modifiers released — confirming selection")
+            NSLog("[WS][Hotkey] Hotkey modifiers released (\(source)) — confirming selection")
             DispatchQueue.main.async { [weak self] in
                 self?.confirmHandler?()
             }
         } else {
-            NSLog("[WS][Hotkey] Hotkey modifiers released — search active, not confirming")
+            NSLog("[WS][Hotkey] Hotkey modifiers released (\(source)) — search active, not confirming")
         }
     }
 
