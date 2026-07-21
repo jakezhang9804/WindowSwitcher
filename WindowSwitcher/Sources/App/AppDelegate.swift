@@ -35,7 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupGlobalHotkey()
         setupAppBindingMonitor()
 
-        // Check accessibility permission
+        // Check accessibility permission. Without it the global keyDown
+        // monitors (number quick-select, Enter/Escape, Option+Key bindings)
+        // receive nothing, so surface the state in the log for diagnosis.
+        NSLog("[WS] Accessibility trusted: \(AccessibilityService.isAccessibilityEnabled)")
         if !AccessibilityService.isAccessibilityEnabled {
             AccessibilityService.requestAccessibilityPermission()
         }
