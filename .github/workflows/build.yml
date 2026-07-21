@@ -31,26 +31,60 @@ jobs:
 
       - name: Build with Swift Package Manager
         run: |
-          swift build -c release
+          # Universal binary so the release runs on Apple Silicon and Intel
+          swift build -c release --arch arm64 --arch x86_64
+          echo "BIN_PATH=$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)" >> "$GITHUB_ENV"
 
       - name: Create App Bundle Structure
         run: |
           APP="artifacts/${{ env.PRODUCT_NAME }}.app"
           mkdir -p "$APP/Contents/MacOS"
           mkdir -p "$APP/Contents/Resources"
-          mkdir -p "$APP/Contents/Frameworks"
 
           # Copy executable
-          cp ".build/release/${{ env.PRODUCT_NAME }}" "$APP/Contents/MacOS/"
+          cp "${BIN_PATH}/${{ env.PRODUCT_NAME }}" "$APP/Contents/MacOS/"
+
+          # Copy SwiftPM resource bundles (KeyboardShortcuts localizations, etc.)
+          # Without these, Bundle.module crashes the app at runtime
+          find "${BIN_PATH}" -maxdepth 1 -name "*.bundle" -exec cp -R {} "$APP/Contents/Resources/" \;
 
           # Copy Info.plist
           cp "WindowSwitcher/Resources/Info.plist" "$APP/Contents/"
+
+          # Stamp the version from the tag so the packaged app reports the
+          # released version (otherwise the update checker sees itself as outdated)
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" "$APP/Contents/Info.plist"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${VERSION}" "$APP/Contents/Info.plist"
+            echo "Stamped version ${VERSION}"
+          fi
+
+          # Build AppIcon.icns from the asset catalog PNGs
+          # (SwiftPM does not compile asset catalogs, so the icon must be
+          # generated here — Info.plist declares CFBundleIconFile: AppIcon)
+          ICONSET="artifacts/AppIcon.iconset"
+          ICONSRC="WindowSwitcher/Assets.xcassets/AppIcon.appiconset"
+          mkdir -p "$ICONSET"
+          cp "$ICONSRC/icon_16x16.png"     "$ICONSET/icon_16x16.png"
+          cp "$ICONSRC/icon_32x32.png"     "$ICONSET/icon_16x16@2x.png"
+          cp "$ICONSRC/icon_32x32.png"     "$ICONSET/icon_32x32.png"
+          cp "$ICONSRC/icon_64x64.png"     "$ICONSET/icon_32x32@2x.png"
+          cp "$ICONSRC/icon_128x128.png"   "$ICONSET/icon_128x128.png"
+          cp "$ICONSRC/icon_256x256.png"   "$ICONSET/icon_128x128@2x.png"
+          cp "$ICONSRC/icon_256x256.png"   "$ICONSET/icon_256x256.png"
+          cp "$ICONSRC/icon_512x512.png"   "$ICONSET/icon_256x256@2x.png"
+          cp "$ICONSRC/icon_512x512.png"   "$ICONSET/icon_512x512.png"
+          cp "$ICONSRC/icon_1024x1024.png" "$ICONSET/icon_512x512@2x.png"
+          iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+          rm -rf "$ICONSET"
 
           # Create PkgInfo
           echo -n "APPL????" > "$APP/Contents/PkgInfo"
 
           echo "=== App Bundle Structure ==="
           find "$APP" -type f | head -30
+          lipo -info "$APP/Contents/MacOS/${{ env.PRODUCT_NAME }}"
 
       - name: Sign App (Ad-hoc)
         run: |
@@ -81,15 +115,9 @@ jobs:
 
       - name: Create ZIP Archive
         run: |
-          cd artifacts
-          zip -r "${{ env.PRODUCT_NAME }}.zip" "${{ env.PRODUCT_NAME }}.app"
-
-      - name: Upload App Bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.PRODUCT_NAME }}-app
-          path: artifacts/${{ env.PRODUCT_NAME }}.app
-          retention-days: 30
+          # ditto preserves executable permissions and metadata,
+          # unlike upload-artifact's own zipping
+          ditto -c -k --keepParent "artifacts/${{ env.PRODUCT_NAME }}.app" "artifacts/${{ env.PRODUCT_NAME }}.zip"
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
