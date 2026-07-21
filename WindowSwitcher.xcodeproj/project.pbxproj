@@ -13,10 +13,8 @@
 		
 		/* Views */
 		VIEW001 /* SwitcherWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC003; };
-		VIEW002 /* SearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC004; };
-		VIEW003 /* ResultsList.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC005; };
-		VIEW004 /* ResultItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC006; };
 		VIEW005 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC007; };
+		VIEW006 /* KeyablePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC017; };
 		
 		/* ViewModels */
 		VM001 /* SwitcherViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC008; };
@@ -30,14 +28,12 @@
 		
 		/* Models */
 		MDL001 /* WindowInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC013; };
-		MDL002 /* AppInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC014; };
-		
+
 		/* Utils */
-		UTL001 /* Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC015; };
-		
+		UTL002 /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC018; };
+
 		/* Frameworks */
 			FRM001 /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = PKG001; };
-			FRM002 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = PKG002; };
 			FRM003 /* AppSwitcherKit in Frameworks */ = {isa = PBXBuildFile; productRef = PKG003; };
 /* End PBXBuildFile section */
 
@@ -49,9 +45,6 @@
 		SRC001 /* WindowSwitcherApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowSwitcherApp.swift; sourceTree = "<group>"; };
 		SRC002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		SRC003 /* SwitcherWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitcherWindow.swift; sourceTree = "<group>"; };
-		SRC004 /* SearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchField.swift; sourceTree = "<group>"; };
-		SRC005 /* ResultsList.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResultsList.swift; sourceTree = "<group>"; };
-		SRC006 /* ResultItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResultItem.swift; sourceTree = "<group>"; };
 		SRC007 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		SRC008 /* SwitcherViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitcherViewModel.swift; sourceTree = "<group>"; };
 		SRC009 /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
@@ -59,9 +52,9 @@
 		SRC011 /* AccessibilityService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityService.swift; sourceTree = "<group>"; };
 		SRC012 /* HotkeyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyService.swift; sourceTree = "<group>"; };
 		SRC013 /* WindowInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowInfo.swift; sourceTree = "<group>"; };
-		SRC014 /* AppInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppInfo.swift; sourceTree = "<group>"; };
-		SRC015 /* Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Extensions.swift; sourceTree = "<group>"; };
 		SRC016 /* UpdateService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateService.swift; sourceTree = "<group>"; };
+		SRC017 /* KeyablePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyablePanel.swift; sourceTree = "<group>"; };
+		SRC018 /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = L10n.swift; sourceTree = "<group>"; };
 		
 		/* Resources */
 		RES001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -74,7 +67,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				FRM001 /* KeyboardShortcuts in Frameworks */,
-				FRM002 /* Sparkle in Frameworks */,
 				FRM003 /* AppSwitcherKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -134,9 +126,7 @@
 			isa = PBXGroup;
 			children = (
 				SRC003 /* SwitcherWindow.swift */,
-				SRC004 /* SearchField.swift */,
-				SRC005 /* ResultsList.swift */,
-				SRC006 /* ResultItem.swift */,
+				SRC017 /* KeyablePanel.swift */,
 				SRC007 /* SettingsView.swift */,
 			);
 			path = Views;
@@ -166,7 +156,6 @@
 			isa = PBXGroup;
 			children = (
 				SRC013 /* WindowInfo.swift */,
-				SRC014 /* AppInfo.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -174,7 +163,7 @@
 		GRP_UTILS /* Utils */ = {
 			isa = PBXGroup;
 			children = (
-				SRC015 /* Extensions.swift */,
+				SRC018 /* L10n.swift */,
 			);
 			path = Utils;
 			sourceTree = "<group>";
@@ -205,7 +194,6 @@
 			name = WindowSwitcher;
 			packageProductDependencies = (
 				PKG001 /* KeyboardShortcuts */,
-				PKG002 /* Sparkle */,
 				PKG003 /* AppSwitcherKit */,
 			);
 			productName = WindowSwitcher;
@@ -238,7 +226,6 @@
 			mainGroup = ROOT;
 			packageReferences = (
 				PKGREF001 /* KeyboardShortcuts */,
-				PKGREF002 /* Sparkle */,
 				PKGREF003 /* AppSwitcherKit */,
 			);
 			productRefGroup = GRP_PRODUCTS /* Products */;
@@ -268,10 +255,8 @@
 				APP001 /* WindowSwitcherApp.swift in Sources */,
 				APP002 /* AppDelegate.swift in Sources */,
 				VIEW001 /* SwitcherWindow.swift in Sources */,
-				VIEW002 /* SearchField.swift in Sources */,
-				VIEW003 /* ResultsList.swift in Sources */,
-				VIEW004 /* ResultItem.swift in Sources */,
 				VIEW005 /* SettingsView.swift in Sources */,
+				VIEW006 /* KeyablePanel.swift in Sources */,
 				VM001 /* SwitcherViewModel.swift in Sources */,
 				VM002 /* SettingsViewModel.swift in Sources */,
 				SVC001 /* WindowService.swift in Sources */,
@@ -279,8 +264,7 @@
 				SVC003 /* HotkeyService.swift in Sources */,
 				SVC004 /* UpdateService.swift in Sources */,
 				MDL001 /* WindowInfo.swift in Sources */,
-				MDL002 /* AppInfo.swift in Sources */,
-				UTL001 /* Extensions.swift in Sources */,
+				UTL002 /* L10n.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -495,14 +479,6 @@
 				minimumVersion = 2.0.0;
 			};
 		};
-		PKGREF002 /* Sparkle */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/sparkle-project/Sparkle.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.0.0;
-			};
-		};
 			PKGREF003 /* AppSwitcherKit */ = {
 				isa = XCLocalSwiftPackageReference;
 				relativePath = Libraries/AppSwitcherKit;
@@ -514,11 +490,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = PKGREF001 /* KeyboardShortcuts */;
 			productName = KeyboardShortcuts;
-		};
-		PKG002 /* Sparkle */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = PKGREF002 /* Sparkle */;
-			productName = Sparkle;
 		};
 			PKG003 /* AppSwitcherKit */ = {
 				isa = XCSwiftPackageProductDependency;

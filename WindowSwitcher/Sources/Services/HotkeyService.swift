@@ -53,8 +53,17 @@ final class HotkeyService {
     /// Track whether the switcher is currently shown
     private(set) var isSwitcherActive = false
 
-    /// Track whether the search field has focus (user is typing)
-    var isSearchFieldFocused = false
+    /// Whether the hotkey's modifiers have been observed held while the switcher
+    /// is active. Releasing them only confirms the selection when armed — this
+    /// prevents a stray modifier press from confirming when the panel was opened
+    /// without the hotkey (e.g. from the menu bar).
+    private var isConfirmArmed = false
+
+    /// The modifier flags of the user's recorded show-switcher shortcut
+    private var hotkeyModifiers: NSEvent.ModifierFlags {
+        let modifiers = KeyboardShortcuts.getShortcut(for: .showSwitcher)?.modifiers ?? .option
+        return modifiers.intersection(.deviceIndependentFlagsMask)
+    }
 
     func onShowSwitcher(_ handler: @escaping () -> Void) {
         self.showHandler = handler
@@ -117,15 +126,17 @@ final class HotkeyService {
     /// Called when the switcher panel is shown — start monitoring
     func switcherDidShow() {
         isSwitcherActive = true
-        isSearchFieldFocused = false
+        let modifiers = hotkeyModifiers
+        isConfirmArmed = !modifiers.isEmpty
+            && NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(modifiers)
         startMonitors()
-        NSLog("[WS][Hotkey] switcherDidShow — monitors started")
+        NSLog("[WS][Hotkey] switcherDidShow — monitors started (confirmArmed=\(isConfirmArmed))")
     }
 
     /// Called when the switcher panel is hidden
     func switcherDidHide() {
         isSwitcherActive = false
-        isSearchFieldFocused = false
+        isConfirmArmed = false
         stopTabRepeatTimer()
         stopMonitors()
         NSLog("[WS][Hotkey] switcherDidHide — monitors stopped")
@@ -200,24 +211,35 @@ final class HotkeyService {
     }
 
     private func handleFlagsChanged(_ event: NSEvent) {
+        guard isSwitcherActive else { return }
+
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let modifiers = hotkeyModifiers
+        guard !modifiers.isEmpty else { return }
 
-        // If Option is no longer held and the switcher is active
-        if !flags.contains(.option) && isSwitcherActive {
-            // Stop any repeat timer
-            stopTabRepeatTimer()
+        // Hotkey modifiers are (still) held — arm the release-to-confirm behavior
+        if flags.contains(modifiers) {
+            isConfirmArmed = true
+            return
+        }
 
-            let searchActive = isSearchActiveProvider?() ?? false
+        // Modifiers released — only confirm if they were held while the switcher was active
+        guard isConfirmArmed else { return }
+        isConfirmArmed = false
 
-            // Only auto-confirm if search is NOT active
-            if !searchActive {
-                NSLog("[WS][Hotkey] Option released — confirming selection")
-                DispatchQueue.main.async { [weak self] in
-                    self?.confirmHandler?()
-                }
-            } else {
-                NSLog("[WS][Hotkey] Option released — search active, not confirming")
+        // Stop any repeat timer
+        stopTabRepeatTimer()
+
+        let searchActive = isSearchActiveProvider?() ?? false
+
+        // Only auto-confirm if search is NOT active
+        if !searchActive {
+            NSLog("[WS][Hotkey] Hotkey modifiers released — confirming selection")
+            DispatchQueue.main.async { [weak self] in
+                self?.confirmHandler?()
             }
+        } else {
+            NSLog("[WS][Hotkey] Hotkey modifiers released — search active, not confirming")
         }
     }
 
@@ -280,16 +302,18 @@ final class HotkeyService {
             }
         }
 
-        // Tab (keyCode 48) in search mode — cycle through results
-        if keyCode == 48 && searchActive {
+        // Tab (keyCode 48) — cycle through results in both modes.
+        // (When the recorded hotkey matches, Carbon consumes the event before we
+        // see it, so this handles Shift+Tab and Tab presses the hotkey doesn't cover.)
+        if keyCode == 48 {
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if flags.contains(.shift) {
-                NSLog("[WS][Hotkey] Shift+Tab in search — previous")
+                NSLog("[WS][Hotkey] Shift+Tab — previous")
                 DispatchQueue.main.async { [weak self] in
                     self?.shiftTabHandler?()
                 }
             } else {
-                NSLog("[WS][Hotkey] Tab in search — next")
+                NSLog("[WS][Hotkey] Tab — next")
                 DispatchQueue.main.async { [weak self] in
                     self?.tabHandler?()
                 }

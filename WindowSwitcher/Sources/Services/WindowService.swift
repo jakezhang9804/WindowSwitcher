@@ -1,6 +1,11 @@
 import AppKit
 import ApplicationServices
 
+/// Private-but-stable AX API that maps an AXUIElement to its CGWindowID,
+/// letting us raise the exact window instead of guessing by title
+@_silgen_name("_AXUIElementGetWindow")
+private func _AXUIElementGetWindow(_ element: AXUIElement, _ windowID: inout CGWindowID) -> AXError
+
 final class WindowService {
 
     /// Get all visible windows, optionally filtered by allowed bundle IDs.
@@ -12,9 +17,11 @@ final class WindowService {
         }
 
         let runningApps = NSWorkspace.shared.runningApplications
-        let appsByPID = Dictionary(uniqueKeysWithValues: runningApps.compactMap { app -> (pid_t, NSRunningApplication)? in
-            (app.processIdentifier, app)
-        })
+        // processIdentifier can be -1 for apps without a PID, so keys may collide
+        let appsByPID = Dictionary(
+            runningApps.map { ($0.processIdentifier, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
 
         let currentBundleID = Bundle.main.bundleIdentifier
 
@@ -127,14 +134,32 @@ final class WindowService {
             return
         }
 
+        // Prefer an exact CGWindowID match; fall back to the first title match
+        // (windows sharing a title would otherwise be indistinguishable)
+        var titleMatch: AXUIElement?
         for axWindow in windows {
-            var titleRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
-            if let title = titleRef as? String, title == window.title {
-                AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
-                AXUIElementSetAttributeValue(axWindow, kAXMainAttribute as CFString, true as CFTypeRef)
-                break
+            var windowID: CGWindowID = 0
+            if _AXUIElementGetWindow(axWindow, &windowID) == .success, windowID == window.id {
+                raise(axWindow)
+                return
+            }
+
+            if titleMatch == nil {
+                var titleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
+                if let title = titleRef as? String, title == window.title {
+                    titleMatch = axWindow
+                }
             }
         }
+
+        if let axWindow = titleMatch {
+            raise(axWindow)
+        }
+    }
+
+    private func raise(_ axWindow: AXUIElement) {
+        AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
+        AXUIElementSetAttributeValue(axWindow, kAXMainAttribute as CFString, true as CFTypeRef)
     }
 }

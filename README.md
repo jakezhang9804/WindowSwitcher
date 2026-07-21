@@ -73,7 +73,6 @@ WindowSwitcher provides a comprehensive preferences panel accessible from the me
 | **Accessibility API** | Window enumeration and activation |
 | **CGWindowList** | Window information retrieval |
 | **KeyboardShortcuts** | Global hotkey management ([sindresorhus/KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts)) |
-| **Sparkle** | Framework integration ([sparkle-project/Sparkle](https://sparkle-project.org/)) |
 | **AppSwitcherKit** | Local library for settings storage, app catalog, and pinned app bindings |
 
 ## Project Structure
@@ -86,9 +85,7 @@ WindowSwitcher/
 │   │   └── AppDelegate.swift          # Panel management, key monitors
 │   ├── Views/
 │   │   ├── SwitcherWindow.swift       # Main switcher panel
-│   │   ├── SearchField.swift          # Search input component
-│   │   ├── ResultsList.swift          # Window/app results list
-│   │   ├── ResultItem.swift           # Individual result row
+│   │   ├── KeyablePanel.swift         # Non-activating key panel
 │   │   └── SettingsView.swift         # Preferences window
 │   ├── ViewModels/
 │   │   ├── SwitcherViewModel.swift    # Switcher logic, global app search
@@ -99,10 +96,9 @@ WindowSwitcher/
 │   │   ├── HotkeyService.swift        # Global shortcut handling
 │   │   └── UpdateService.swift        # GitHub Release update checker
 │   ├── Models/
-│   │   ├── WindowInfo.swift           # Window data model
-│   │   └── AppInfo.swift              # Application data model
+│   │   └── WindowInfo.swift           # Window data model
 │   └── Utils/
-│       └── Extensions.swift           # Shared extensions
+│       └── L10n.swift                 # Runtime localization (EN/ZH)
 ├── Resources/
 │   └── Info.plist
 ├── Assets.xcassets/

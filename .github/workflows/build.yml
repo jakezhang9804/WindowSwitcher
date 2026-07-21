@@ -49,13 +49,6 @@ jobs:
           # Create PkgInfo
           echo -n "APPL????" > "$APP/Contents/PkgInfo"
 
-          # Copy Sparkle framework if exists
-          SPARKLE_PATH=$(find .build -name "Sparkle.framework" -type d 2>/dev/null | head -1)
-          if [ -n "$SPARKLE_PATH" ]; then
-            cp -R "$SPARKLE_PATH" "$APP/Contents/Frameworks/"
-            echo "Sparkle framework copied"
-          fi
-
           echo "=== App Bundle Structure ==="
           find "$APP" -type f | head -30
 

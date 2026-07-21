@@ -16,19 +16,28 @@ struct SwitcherWindow: View {
     @ObservedObject var viewModel: SwitcherViewModel
     let onDismiss: () -> Void
     let onOpenSettings: () -> Void
+    let onItemCountChange: (Int) -> Void
 
     @FocusState private var isTextFieldFocused: Bool
 
     @Environment(\.colorScheme) private var colorScheme
 
+    /// Mouse position when the panel appeared. Hover-selection stays disabled until
+    /// the mouse actually moves — the panel often opens under a stationary cursor,
+    /// which would otherwise silently override the default "previous window" selection.
+    @State private var initialMouseLocation: CGPoint = NSEvent.mouseLocation
+    @State private var mouseHasMoved = false
+
     init(
         viewModel: SwitcherViewModel,
         onDismiss: @escaping () -> Void,
-        onOpenSettings: @escaping () -> Void
+        onOpenSettings: @escaping () -> Void,
+        onItemCountChange: @escaping (Int) -> Void = { _ in }
     ) {
         self.viewModel = viewModel
         self.onDismiss = onDismiss
         self.onOpenSettings = onOpenSettings
+        self.onItemCountChange = onItemCountChange
     }
 
     /// Adaptive foreground color that works in both light and dark modes
@@ -90,6 +99,12 @@ struct SwitcherWindow: View {
                         activateItem(item)
                     },
                     onHover: { index in
+                        if !mouseHasMoved {
+                            let location = NSEvent.mouseLocation
+                            guard abs(location.x - initialMouseLocation.x) > 2
+                                    || abs(location.y - initialMouseLocation.y) > 2 else { return }
+                            mouseHasMoved = true
+                        }
                         viewModel.selectedIndex = index
                     }
                 )
@@ -114,6 +129,10 @@ struct SwitcherWindow: View {
         .onKeyPress(.downArrow) {
             viewModel.selectNext()
             return .handled
+        }
+        // Let the panel resize to match the filtered result count
+        .onChange(of: viewModel.displayItems.count) { _, newCount in
+            onItemCountChange(newCount)
         }
         // Watch for isSearchActive changes from ViewModel to focus TextField
         .onChange(of: viewModel.isSearchActive) { _, isActive in
@@ -251,14 +270,7 @@ struct SwitcherWindow: View {
     // MARK: - Actions
 
     private func activateItem(_ item: SwitcherItem) {
-        switch item {
-        case .window(let window):
-            viewModel.activateWindow(window)
-        case .app(let bundleID, _, _, _):
-            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
-                NSWorkspace.shared.openApplication(at: url, configuration: .init())
-            }
-        }
+        viewModel.activate(item)
         onDismiss()
     }
 }

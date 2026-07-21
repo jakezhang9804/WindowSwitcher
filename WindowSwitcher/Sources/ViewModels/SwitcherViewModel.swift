@@ -40,12 +40,6 @@ enum SwitcherItem: Identifiable, Equatable, Hashable {
         return false
     }
 
-    /// Whether this is a pinned app (not a running window)
-    var isPinnedApp: Bool {
-        if case .app = self { return true }
-        return false
-    }
-
     static func == (lhs: SwitcherItem, rhs: SwitcherItem) -> Bool {
         lhs.id == rhs.id
     }
@@ -62,8 +56,8 @@ class SwitcherViewModel: ObservableObject {
     @Published var isSearchActive: Bool = false
     @Published private(set) var windows: [WindowInfo] = []
 
-    /// All installed apps (loaded once, cached)
-    private var installedApps: [InstalledAppItem] = []
+    /// All installed apps (cached across panel opens, refreshed in the background)
+    @Published private var installedApps: [InstalledAppItem] = []
 
     /// Pinned (allowed) bundle IDs from settings
     private var pinnedBundleIDs: Set<String> = []
@@ -123,27 +117,7 @@ class SwitcherViewModel: ObservableObject {
         return items
     }
 
-    /// For backward compatibility — filtered windows only
-    var filteredWindows: [WindowInfo] {
-        if searchText.isEmpty { return windows }
-        let query = searchText.lowercased().trimmingCharacters(in: .whitespaces)
-        let queryWords = query.split(separator: " ").map(String.init)
-        return windows.filter { window in
-            let titleLower = window.title.lowercased()
-            let appNameLower = window.appName.lowercased()
-            return queryWords.allSatisfy { word in
-                titleLower.contains(word) || appNameLower.contains(word)
-            }
-        }
-    }
-
     var totalCount: Int { windows.count }
-
-    /// Whether there are pinned apps that are not running (for section header display)
-    var hasPinnedNotRunning: Bool {
-        let runningBundleIDs = Set(windows.compactMap { $0.appBundleID })
-        return pinnedBundleIDs.contains(where: { !runningBundleIDs.contains($0) })
-    }
 
     var selectedItem: SwitcherItem? {
         let items = displayItems
@@ -173,8 +147,12 @@ class SwitcherViewModel: ObservableObject {
         let settings = settingsStore.load()
         self.pinnedBundleIDs = settings.allowedBundleIDs
 
-        // Reset selection when search text changes
+        // Reset selection when search text actually changes.
+        // removeDuplicates + dropFirst prevent the initial ""/refreshWindows()
+        // assignments from clobbering the default "previous window" selection.
         $searchText
+            .removeDuplicates()
+            .dropFirst()
             .debounce(for: .milliseconds(50), scheduler: RunLoop.main)
             .sink { [weak self] _ in
                 self?.selectedIndex = 0
@@ -205,13 +183,8 @@ class SwitcherViewModel: ObservableObject {
         selectedIndex = (selectedIndex - 1 + count) % count
     }
 
-    func activateWindow(_ window: WindowInfo) {
-        windowService.activateWindow(window)
-    }
-
-    /// Activate the selected item — either switch to window or launch app
-    func activateSelectedItem() {
-        guard let item = selectedItem else { return }
+    /// Activate an item — either switch to the window or activate/launch the app
+    func activate(_ item: SwitcherItem) {
         switch item {
         case .window(let window):
             windowService.activateWindow(window)
@@ -220,18 +193,44 @@ class SwitcherViewModel: ObservableObject {
         }
     }
 
+    /// Activate the currently selected item
+    func activateSelectedItem() {
+        guard let item = selectedItem else { return }
+        activate(item)
+    }
+
     // MARK: - Private
 
+    /// Shared across view model instances so the panel opens without rescanning the disk each time
+    private static var cachedInstalledApps: [InstalledAppItem]?
+    private static var lastCatalogRefresh: Date = .distantPast
+    private static let catalogRefreshInterval: TimeInterval = 300
+
     private func loadInstalledApps() {
-        let catalog = InstalledAppCatalog()
-        let apps = catalog.fetchInstalledApps()
-        self.installedApps = apps.map { app in
-            InstalledAppItem(
-                bundleID: app.bundleID,
-                name: app.displayName,
-                icon: NSWorkspace.shared.icon(forFile: app.bundlePath),
-                path: app.bundlePath
-            )
+        if let cached = Self.cachedInstalledApps {
+            installedApps = cached
+        }
+
+        guard Date().timeIntervalSince(Self.lastCatalogRefresh) >= Self.catalogRefreshInterval else {
+            return
+        }
+        Self.lastCatalogRefresh = Date()
+
+        // Scanning /Applications and loading icons is slow — keep it off the main thread
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let catalog = InstalledAppCatalog()
+            let apps = catalog.fetchInstalledApps().map { app in
+                InstalledAppItem(
+                    bundleID: app.bundleID,
+                    name: app.displayName,
+                    icon: NSWorkspace.shared.icon(forFile: app.bundlePath),
+                    path: app.bundlePath
+                )
+            }
+            await MainActor.run { [weak self] in
+                Self.cachedInstalledApps = apps
+                self?.installedApps = apps
+            }
         }
     }
 }

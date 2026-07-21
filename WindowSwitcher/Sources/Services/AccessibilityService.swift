@@ -10,7 +10,7 @@ enum AccessibilityService {
     
     @discardableResult
     static func requestAccessibilityPermission() -> Bool {
-        let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeRetainedValue(): true]
+        let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true]
         return AXIsProcessTrustedWithOptions(options)
     }
     

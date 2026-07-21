@@ -48,6 +48,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
+        // Keep the menu bar icon in sync with the "Show menu bar icon" setting
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(userDefaultsDidChange),
+            name: UserDefaults.didChangeNotification,
+            object: UserDefaults.standard
+        )
+
         // Start automatic update checks
         UpdateService.shared.startAutomaticChecks()
 
@@ -95,7 +103,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
 
         statusItem.menu = menu
+        updateStatusItemVisibility()
         NSLog("[WS] Status bar item created")
+    }
+
+    @objc private func userDefaultsDidChange() {
+        updateStatusItemVisibility()
+    }
+
+    private func updateStatusItemVisibility() {
+        let show = UserDefaults.standard.object(forKey: "showMenuBarIcon") as? Bool ?? true
+        if statusItem.isVisible != show {
+            statusItem.isVisible = show
+        }
     }
 
     // MARK: - Global Hotkey (Option+Tab)
@@ -308,6 +328,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                     self?.openPreferences()
                 }
+            },
+            onItemCountChange: { [weak self] count in
+                // Called during a SwiftUI update — defer the frame change
+                DispatchQueue.main.async {
+                    self?.resizeSwitcherPanel(itemCount: count)
+                }
             }
         )
 
@@ -384,7 +410,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if itemCount > 0 {
             itemsTotal = CGFloat(itemCount) * itemHeight + CGFloat(itemCount - 1) * itemSpacing
         } else {
-            itemsTotal = 80  // empty state min height
+            itemsTotal = 140  // empty state: minHeight 80 + vertical padding 30*2
         }
 
         let totalHeight = searchBarHeight + listPadding + itemsTotal + bottomBarHeight
@@ -394,21 +420,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return min(max(totalHeight, 150), maxHeight)
     }
 
-    /// Handle Escape key — context-dependent behavior
-    private func handleEscape() {
-        let hasSearchText = MainActor.assumeIsolated {
-            !(switcherViewModel?.searchText.isEmpty ?? true)
-        }
-        if hasSearchText {
-            // Clear search text first
-            MainActor.assumeIsolated {
-                switcherViewModel?.searchText = ""
+    /// Resize the visible panel when the result count changes (e.g. while searching),
+    /// keeping the top edge fixed so the search bar doesn't jump
+    private func resizeSwitcherPanel(itemCount: Int) {
+        guard let panel = switcherPanel, panel.isVisible else { return }
+        let height = calculatePanelHeight(itemCount: itemCount)
+        var frame = panel.frame
+        guard frame.height != height else { return }
+        frame.origin.y = frame.maxY - height
+        frame.size.height = height
+
+        // Keep the panel inside the screen's visible area when it grows
+        if let visible = (panel.screen ?? NSScreen.main)?.visibleFrame {
+            if frame.maxY > visible.maxY {
+                frame.origin.y = visible.maxY - height
             }
-            NSLog("[WS] Escape — cleared search text")
-        } else {
-            // Search text is empty — dismiss panel
-            hideSwitcher()
+            if frame.minY < visible.minY {
+                frame.origin.y = visible.minY
+            }
         }
+
+        panel.setFrame(frame, display: true)
     }
 
     /// Confirm the current selection and hide the switcher
@@ -458,17 +490,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = false  // Allow becoming key immediately
 
-        // When the panel loses focus (user clicked elsewhere) while search is active, close the panel
+        // When the panel loses focus (user clicked elsewhere), close it.
+        // hideSwitcher is idempotent, so the resign triggered by our own
+        // orderOut/confirm flow is harmless.
         panel.onResignKey = { [weak self] in
-            guard let self = self else { return }
-            let searchActive = MainActor.assumeIsolated {
-                self.switcherViewModel?.isSearchActive ?? false
-            }
-            if searchActive {
-                NSLog("[WS] Panel lost focus while search active — dismissing")
-                DispatchQueue.main.async {
-                    self.hideSwitcher()
-                }
+            NSLog("[WS] Panel lost focus — dismissing")
+            DispatchQueue.main.async {
+                self?.hideSwitcher()
             }
         }
 
@@ -581,11 +609,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension KeyboardShortcuts.Name {
     static let showSwitcher = Self("showSwitcher", default: .init(.tab, modifiers: [.option]))
-}
-
-// MARK: - Notification Names
-
-extension Notification.Name {
-    /// Posted when the user releases the Option key to confirm the current selection
-    static let switcherConfirmSelection = Notification.Name("switcherConfirmSelection")
 }

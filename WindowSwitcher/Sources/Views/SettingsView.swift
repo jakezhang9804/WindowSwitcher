@@ -331,10 +331,17 @@ struct PinnedAppRow: View {
                         .font(.system(size: 12, design: .monospaced))
                         .onChange(of: triggerKeyText) { _, newValue in
                             let filtered = String(newValue.prefix(1)).uppercased()
-                            if filtered != newValue {
+                            guard filtered == newValue else {
+                                // Re-triggers onChange with the normalized value,
+                                // so the save happens exactly once
                                 triggerKeyText = filtered
+                                return
                             }
                             viewModel.setTriggerKey(app.bundleID, key: filtered)
+                            if viewModel.errorMessage != nil {
+                                // Save rejected (duplicate key) — show the stored value
+                                triggerKeyText = viewModel.triggerKey(for: app.bundleID)
+                            }
                         }
                 }
             }
@@ -609,6 +616,9 @@ class AppConfigViewModel: ObservableObject {
             currentSettings = settingsStore.load()
             NotificationCenter.default.post(name: .switcherSettingsDidChange, object: nil)
         } catch {
+            // Roll back the in-memory settings — keeping the rejected change
+            // around would make every subsequent save fail as well
+            currentSettings = settingsStore.load()
             errorMessage = error.localizedDescription
         }
     }
