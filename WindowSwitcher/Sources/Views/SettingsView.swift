@@ -1,6 +1,7 @@
 import SwiftUI
 import KeyboardShortcuts
 import AppSwitcherKit
+import PermissionFlow
 
 /// Settings window
 /// 3 Tabs: Preferences, Hotkeys, About
@@ -26,33 +27,6 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Custom Section Style
-
-struct SettingsSection<Content: View>: View {
-    let title: String
-    let content: Content
-
-    init(_ title: String, @ViewBuilder content: () -> Content) {
-        self.title = title
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.headline)
-
-            VStack(alignment: .leading, spacing: 10) {
-                content
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.primary.opacity(0.06))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-    }
-}
-
 // MARK: - Preferences Tab
 
 struct PreferencesTab: View {
@@ -65,144 +39,126 @@ struct PreferencesTab: View {
     @StateObject private var settingsVM = SettingsViewModel()
     @StateObject private var appConfigVM = AppConfigViewModel()
 
-    @State private var isAccessibilityGranted = false
-    @State private var isScreenRecordingGranted = false
-
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                // Permissions
-                SettingsSection(L10n.permissionsTitle) {
-                    Text(L10n.permissionsDescription)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+        Form {
+            // Permissions — live status plus PermissionFlow's guided grant flow
+            // (opens the right privacy pane and floats a drag-in helper panel)
+            Section {
+                permissionRow(
+                    title: L10n.accessibilityTitle,
+                    description: L10n.accessibilityDescription,
+                    pane: .accessibility
+                )
+                permissionRow(
+                    title: L10n.screenRecordingTitle,
+                    description: L10n.screenRecordingDescription,
+                    pane: .screenRecording
+                )
+            } header: {
+                Text(L10n.permissionsTitle)
+            } footer: {
+                Text(L10n.permissionsRestart)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
 
-                    PermissionRow(
-                        title: L10n.accessibilityTitle,
-                        description: L10n.accessibilityDescription,
-                        isGranted: isAccessibilityGranted,
-                        action: {
-                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-                        }
-                    )
+            // General
+            Section(L10n.generalTitle) {
+                Toggle(L10n.showMenuBarIcon, isOn: $showMenuBarIcon)
+                Toggle(L10n.startAtLogin, isOn: $settingsVM.launchAtLogin)
+            }
 
-                    PermissionRow(
-                        title: L10n.screenRecordingTitle,
-                        description: L10n.screenRecordingDescription,
-                        isGranted: isScreenRecordingGranted,
-                        action: {
-                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-                        }
-                    )
-
-                    Text(L10n.permissionsRestart)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+            // Appearance
+            Section(L10n.appearanceTitle) {
+                Picker(L10n.themeTitle, selection: $appTheme) {
+                    Text(L10n.themeSystem).tag("system")
+                    Text(L10n.themeLight).tag("light")
+                    Text(L10n.themeDark).tag("dark")
                 }
-                .onAppear { checkPermissions() }
-
-                // General
-                SettingsSection(L10n.generalTitle) {
-                    Toggle(L10n.showMenuBarIcon, isOn: $showMenuBarIcon)
-                    Toggle(L10n.startAtLogin, isOn: $settingsVM.launchAtLogin)
-                }
-
-                // Appearance
-                SettingsSection(L10n.appearanceTitle) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(L10n.themeTitle)
-                            .font(.subheadline.weight(.medium))
-                        Picker("", selection: $appTheme) {
-                            Text(L10n.themeSystem).tag("system")
-                            Text(L10n.themeLight).tag("light")
-                            Text(L10n.themeDark).tag("dark")
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                    }
-
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(L10n.panelPositionTitle)
-                            .font(.subheadline.weight(.medium))
-                        Picker("", selection: $panelPosition) {
-                            Text(L10n.positionLeft).tag("left")
-                            Text(L10n.positionCenter).tag("center")
-                            Text(L10n.positionRight).tag("right")
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                    }
-                }
-
-                // Show on Screen
-                SettingsSection(L10n.showOnScreenTitle) {
-                    Picker("", selection: $screenMode) {
-                        Text(L10n.screenModeFocused).tag("focused")
-                        Text(L10n.screenModeFixed).tag("fixed")
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-
-                    if screenMode == "fixed" {
-                        Divider()
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(L10n.fixedScreenDescription)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-
-                            Picker("", selection: $selectedScreenIndex) {
-                                ForEach(Array(screenNames.enumerated()), id: \.offset) { index, name in
-                                    Text(name).tag(index)
-                                }
-                            }
-                            .labelsHidden()
-
-                            Text(L10n.screensDetected(NSScreen.screens.count))
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-
-                // Pinned Apps
-                SettingsSection(L10n.pinnedAppsTitle) {
-                    Text(L10n.pinnedAppsDescription)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    TextField(L10n.searchAppsPlaceholder, text: $appConfigVM.searchText)
-                        .textFieldStyle(.roundedBorder)
-
-                    Divider()
-
-                    if appConfigVM.filteredApps.isEmpty {
-                        Text(L10n.noAppsFound)
-                            .foregroundColor(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 20)
-                    } else {
-                        ScrollView {
-                            LazyVStack(spacing: 0) {
-                                ForEach(appConfigVM.filteredApps) { app in
-                                    PinnedAppRow(app: app, viewModel: appConfigVM)
-                                    Divider()
-                                }
-                            }
-                        }
-                        .frame(height: 240)
-                    }
-
-                    if let errorMsg = appConfigVM.errorMessage {
-                        Text(errorMsg)
-                            .font(.caption)
-                            .foregroundColor(.red)
-                    }
+                Picker(L10n.panelPositionTitle, selection: $panelPosition) {
+                    Text(L10n.positionLeft).tag("left")
+                    Text(L10n.positionCenter).tag("center")
+                    Text(L10n.positionRight).tag("right")
                 }
             }
-            .padding(16)
+
+            // Show on Screen
+            Section {
+                Picker(L10n.showOnScreenTitle, selection: $screenMode) {
+                    Text(L10n.screenModeFocused).tag("focused")
+                    Text(L10n.screenModeFixed).tag("fixed")
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                if screenMode == "fixed" {
+                    Picker(L10n.screenModeFixed, selection: $selectedScreenIndex) {
+                        ForEach(Array(screenNames.enumerated()), id: \.offset) { index, name in
+                            Text(name).tag(index)
+                        }
+                    }
+                }
+            } header: {
+                Text(L10n.showOnScreenTitle)
+            } footer: {
+                if screenMode == "fixed" {
+                    Text("\(L10n.fixedScreenDescription) \(L10n.screensDetected(NSScreen.screens.count))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            // Pinned Apps
+            Section {
+                TextField(L10n.searchAppsPlaceholder, text: $appConfigVM.searchText)
+                    .textFieldStyle(.roundedBorder)
+
+                if let errorMsg = appConfigVM.errorMessage {
+                    Text(errorMsg)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+
+                if appConfigVM.filteredApps.isEmpty {
+                    Text(L10n.noAppsFound)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 12)
+                } else {
+                    ForEach(appConfigVM.filteredApps) { app in
+                        PinnedAppRow(app: app, viewModel: appConfigVM)
+                    }
+                }
+            } header: {
+                Text(L10n.pinnedAppsTitle)
+            } footer: {
+                Text(L10n.pinnedAppsDescription)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    // MARK: - Permission Row
+
+    private func permissionRow(title: String, description: String, pane: PermissionFlowPane) -> some View {
+        LabeledContent {
+            PermissionFlowButton(
+                pane: pane,
+                suggestedAppURLs: [Bundle.main.bundleURL]
+            ) { state in
+                if state.isGranted {
+                    Label(L10n.permissionGranted, systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else {
+                    Label(L10n.permissionGuide, systemImage: "arrow.right.circle.fill")
+                        .foregroundStyle(.tint)
+                }
+            }
+        } label: {
+            Text(title)
+            Text(description)
         }
     }
 
@@ -211,78 +167,6 @@ struct PreferencesTab: View {
     private var screenNames: [String] {
         NSScreen.screens.enumerated().map { index, screen in
             screen.localizedName
-        }
-    }
-
-    // MARK: - Permission Check
-
-    private func checkPermissions() {
-        isAccessibilityGranted = checkAccessibilityPermission()
-        isScreenRecordingGranted = checkScreenRecordingPermission()
-    }
-
-    private func checkAccessibilityPermission() -> Bool {
-        if AXIsProcessTrusted() { return true }
-
-        let systemWide = AXUIElementCreateSystemWide()
-        var value: CFTypeRef?
-        let result = AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &value)
-        if result == .success { return true }
-
-        let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
-        for app in apps.prefix(3) {
-            let appElement = AXUIElementCreateApplication(app.processIdentifier)
-            var roleRef: CFTypeRef?
-            let roleResult = AXUIElementCopyAttributeValue(appElement, kAXRoleAttribute as CFString, &roleRef)
-            if roleResult == .success { return true }
-        }
-
-        return false
-    }
-
-    private func checkScreenRecordingPermission() -> Bool {
-        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
-        guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
-            return false
-        }
-        for window in windowList {
-            if let name = window[kCGWindowName as String] as? String, !name.isEmpty {
-                return true
-            }
-        }
-        return false
-    }
-}
-
-// MARK: - Permission Row
-
-struct PermissionRow: View {
-    let title: String
-    let description: String
-    let isGranted: Bool
-    let action: () -> Void
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: isGranted ? "checkmark.circle.fill" : "xmark.circle.fill")
-                .foregroundColor(isGranted ? .green : .red)
-                .font(.system(size: 18))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                Text(description)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            Spacer()
-
-            if !isGranted {
-                Button(L10n.openSettings, action: action)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-            }
         }
     }
 }
@@ -346,8 +230,7 @@ struct PinnedAppRow: View {
                 }
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.vertical, 2)
         .onAppear {
             triggerKeyText = viewModel.triggerKey(for: app.bundleID)
         }
@@ -377,7 +260,6 @@ struct HotkeysTab: View {
             }
         }
         .formStyle(.grouped)
-        .padding()
     }
 }
 

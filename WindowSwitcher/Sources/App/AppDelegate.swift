@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import KeyboardShortcuts
 import AppSwitcherKit
+import PermissionFlowScreenRecordingStatus
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
@@ -30,6 +31,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSLog("[WS] applicationDidFinishLaunching")
+
+        // Screen-recording status detection is an opt-in PermissionFlow module
+        // that must be registered before the Settings permission rows read it
+        MainActor.assumeIsolated {
+            PermissionFlowScreenRecordingStatus.register()
+        }
 
         setupStatusBarItem()
         setupGlobalHotkey()

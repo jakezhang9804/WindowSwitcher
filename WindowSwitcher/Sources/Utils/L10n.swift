@@ -32,9 +32,6 @@ enum L10n {
     // MARK: - Settings: Permissions
 
     static let permissionsTitle = isChinese ? "权限" : "Permissions"
-    static let permissionsDescription = isChinese
-        ? "WindowSwitcher 需要以下权限才能正常工作："
-        : "WindowSwitcher needs the following permissions to work properly:"
     static let accessibilityTitle = isChinese ? "辅助功能" : "Accessibility"
     static let accessibilityDescription = isChinese
         ? "用于激活和切换窗口"
@@ -46,7 +43,8 @@ enum L10n {
     static let permissionsRestart = isChinese
         ? "授权后可能需要重新启动应用。"
         : "After granting permissions, you may need to restart the app."
-    static let openSettings = isChinese ? "打开设置" : "Open Settings"
+    static let permissionGranted = isChinese ? "已授权" : "Granted"
+    static let permissionGuide = isChinese ? "去开启" : "Grant Access"
 
     // MARK: - Settings: General
 
