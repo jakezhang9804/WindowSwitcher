@@ -58,6 +58,15 @@ final class HotkeyService {
     private var modifierPollTimer: Timer?
     private let modifierPollInterval: TimeInterval = 0.03
 
+    /// CGEventTap — the primary input path. Sees and can consume every key
+    /// event before the system acts on it, which is what makes Command+Tab
+    /// takeover possible and modifier-release detection reliable (NSEvent
+    /// monitor delivery has proven flaky on some systems).
+    private var eventTap: CFMachPort?
+    private var tapRunLoopSource: CFRunLoopSource?
+
+    var isEventTapActive: Bool { eventTap != nil }
+
     /// Track whether the switcher is currently shown
     private(set) var isSwitcherActive = false
 
@@ -67,8 +76,24 @@ final class HotkeyService {
     /// without the hotkey (e.g. from the menu bar).
     private var isConfirmArmed = false
 
-    /// The modifier flags of the user's recorded show-switcher shortcut
+    /// Latched once a release-confirm fires for the current panel session.
+    /// Multiple detection paths (tap, monitor, poll) observe the same release
+    /// at slightly different times — without the latch, a stale poll reading
+    /// can re-arm between them and double-fire the confirmation.
+    private var hasConfirmedThisSession = false
+
+    /// Whether the trigger is Command+Tab (taking over the system app
+    /// switcher) instead of the default Option+Tab
+    private var useCommandTab: Bool {
+        UserDefaults.standard.bool(forKey: "useCommandTab")
+    }
+
+    /// The modifier that must be held to drive the switcher and whose release
+    /// confirms the selection
     private var hotkeyModifiers: NSEvent.ModifierFlags {
+        if isEventTapActive {
+            return useCommandTab ? .command : .option
+        }
         let modifiers = KeyboardShortcuts.getShortcut(for: .showSwitcher)?.modifiers ?? .option
         return modifiers.intersection(.deviceIndependentFlagsMask)
     }
@@ -91,11 +116,11 @@ final class HotkeyService {
     func onShowSwitcher(_ handler: @escaping () -> Void) {
         self.showHandler = handler
 
-        // KeyboardShortcuts uses Carbon EventHotKey for Option+Tab detection.
-        // Carbon hotkeys fire once on keyDown and don't repeat on long-press.
-        // We use a Timer to simulate long-press repeat behavior.
+        // Carbon hotkey fallback for when the event tap can't be created
+        // (e.g. accessibility permission missing). The tap consumes the
+        // trigger combo before Carbon sees it, so this stays quiet otherwise.
         KeyboardShortcuts.onKeyDown(for: .showSwitcher) { [weak self] in
-            guard let self = self else { return }
+            guard let self = self, !self.isEventTapActive else { return }
             NSLog("[WS][Hotkey] Option+Tab keyDown (active=\(self.isSwitcherActive))")
             if self.isSwitcherActive {
                 // Panel already visible → cycle to next item immediately
@@ -110,12 +135,12 @@ final class HotkeyService {
 
         // When Tab is released → stop the repeat timer
         KeyboardShortcuts.onKeyUp(for: .showSwitcher) { [weak self] in
-            guard let self = self else { return }
+            guard let self = self, !self.isEventTapActive else { return }
             NSLog("[WS][Hotkey] Option+Tab keyUp — stopping repeat timer")
             self.stopTabRepeatTimer()
         }
 
-        NSLog("[WS][Hotkey] Registered KeyboardShortcuts for Option+Tab")
+        NSLog("[WS][Hotkey] Registered KeyboardShortcuts fallback for Option+Tab")
     }
 
     func onConfirmSelection(_ handler: @escaping () -> Void) {
@@ -149,11 +174,15 @@ final class HotkeyService {
     /// Called when the switcher panel is shown — start monitoring
     func switcherDidShow() {
         isSwitcherActive = true
+        hasConfirmedThisSession = false
         let modifiers = hotkeyModifiers
-        isConfirmArmed = !modifiers.isEmpty && Self.currentHeldModifiers().contains(modifiers)
+        // OR, not overwrite: the event tap arms before requesting the show,
+        // and that signal is more reliable than the session flags state
+        isConfirmArmed = isConfirmArmed
+            || (!modifiers.isEmpty && Self.currentHeldModifiers().contains(modifiers))
         startMonitors()
         startModifierPollTimer()
-        NSLog("[WS][Hotkey] switcherDidShow — monitors started (confirmArmed=\(isConfirmArmed))")
+        NSLog("[WS][Hotkey] switcherDidShow — monitors started (confirmArmed=\(isConfirmArmed), tap=\(isEventTapActive))")
     }
 
     /// Called when the switcher panel is hidden
@@ -193,6 +222,111 @@ final class HotkeyService {
     private func stopTabRepeatTimer() {
         tabRepeatTimer?.invalidate()
         tabRepeatTimer = nil
+    }
+
+    // MARK: - Event Tap (primary input path)
+
+    /// Install the event tap. Requires accessibility trust; falls back to the
+    /// Carbon hotkey + NSEvent monitors when creation fails.
+    func startEventTap() {
+        guard eventTap == nil else { return }
+
+        let mask: CGEventMask =
+            (1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.flagsChanged.rawValue)
+
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: mask,
+            callback: { _, type, event, refcon in
+                guard let refcon else { return Unmanaged.passUnretained(event) }
+                let service = Unmanaged<HotkeyService>.fromOpaque(refcon).takeUnretainedValue()
+                return service.handleTapEvent(type: type, event: event)
+            },
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else {
+            NSLog("[WS][Hotkey] Event tap creation FAILED — using Carbon hotkey fallback")
+            return
+        }
+
+        eventTap = tap
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        tapRunLoopSource = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        NSLog("[WS][Hotkey] Event tap started (trigger=\(useCommandTab ? "Command" : "Option")+Tab)")
+    }
+
+    func stopEventTap() {
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+        }
+        if let source = tapRunLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+        }
+        eventTap = nil
+        tapRunLoopSource = nil
+    }
+
+    /// Runs on the main thread (the tap's run loop source is on the main loop).
+    /// Returning nil consumes the event — that is what suppresses the system
+    /// app switcher when the trigger is Command+Tab.
+    private func handleTapEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        // The system disables a tap whose callback stalls — re-enable and pass
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
+            NSLog("[WS][Hotkey] Event tap re-enabled after system disable")
+            return Unmanaged.passUnretained(event)
+        }
+
+        if type == .flagsChanged {
+            // The tap sees every modifier transition — the reliable
+            // release-to-confirm source. Never consume these.
+            let nsFlags = NSEvent.ModifierFlags(rawValue: UInt(event.flags.rawValue))
+                .intersection(.deviceIndependentFlagsMask)
+            updateConfirmState(heldFlags: nsFlags, source: "tap")
+            return Unmanaged.passUnretained(event)
+        }
+
+        guard type == .keyDown else { return Unmanaged.passUnretained(event) }
+
+        let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+        let triggerFlag: CGEventFlags = useCommandTab ? .maskCommand : .maskAlternate
+        let triggerHeld = event.flags.contains(triggerFlag)
+
+        // Trigger+Tab → show or cycle (Shift reverses). Consuming the event
+        // is what blocks the system Cmd+Tab switcher in Command mode. Key
+        // repeat arrives as extra keyDowns, so holding Tab cycles naturally.
+        if keyCode == 48 && triggerHeld {
+            if isSwitcherActive {
+                if event.flags.contains(.maskShift) {
+                    shiftTabHandler?()
+                } else {
+                    tabHandler?()
+                }
+            } else {
+                NSLog("[WS][Hotkey] Tap: \(useCommandTab ? "Cmd" : "Option")+Tab — showing switcher")
+                isConfirmArmed = true
+                showHandler?()
+            }
+            return nil
+        }
+
+        if isSwitcherActive {
+            // Reuse the monitor key handling (numbers, Enter, Escape, search)
+            if let nsEvent = NSEvent(cgEvent: event), handleKeyDown(nsEvent) {
+                return nil
+            }
+            // Swallow any other combo while the trigger modifier is held so
+            // shortcuts like Cmd+Q can't hit the frontmost app mid-switch
+            if triggerHeld {
+                return nil
+            }
+        }
+
+        return Unmanaged.passUnretained(event)
     }
 
     // MARK: - Modifier Poll Timer (release-to-confirm fallback)
@@ -260,11 +394,11 @@ final class HotkeyService {
         )
     }
 
-    /// Shared release-to-confirm logic, driven by both the flagsChanged
-    /// monitors (instant) and the poll timer (fallback). Runs on the main
-    /// thread in both cases, so arming state needs no synchronization.
+    /// Shared release-to-confirm logic, driven by the event tap (primary),
+    /// the flagsChanged monitors, and the poll timer (fallbacks). Runs on the
+    /// main thread in all cases, so arming state needs no synchronization.
     private func updateConfirmState(heldFlags: NSEvent.ModifierFlags, source: String) {
-        guard isSwitcherActive else { return }
+        guard isSwitcherActive, !hasConfirmedThisSession else { return }
 
         let modifiers = hotkeyModifiers
         guard !modifiers.isEmpty else { return }
@@ -278,6 +412,7 @@ final class HotkeyService {
         // Modifiers released — only confirm if they were held while the switcher was active
         guard isConfirmArmed else { return }
         isConfirmArmed = false
+        hasConfirmedThisSession = true
 
         // Stop any repeat timer
         stopTabRepeatTimer()

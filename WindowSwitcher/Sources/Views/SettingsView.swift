@@ -274,12 +274,21 @@ struct PinnedAppRow: View {
 // MARK: - Hotkeys Tab
 
 struct HotkeysTab: View {
+    @AppStorage("useCommandTab") private var useCommandTab = false
+
     var body: some View {
         Form {
             Section {
-                KeyboardShortcuts.Recorder(L10n.showSwitcherLabel, name: .showSwitcher)
+                Picker(L10n.showSwitcherLabel, selection: $useCommandTab) {
+                    Text("⌥ Option + Tab").tag(false)
+                    Text("⌘ Command + Tab").tag(true)
+                }
             } header: {
                 Text(L10n.keyboardShortcutsTitle)
+            } footer: {
+                Text(useCommandTab ? L10n.commandTabFootnote : L10n.optionTabFootnote)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
 
             Section {

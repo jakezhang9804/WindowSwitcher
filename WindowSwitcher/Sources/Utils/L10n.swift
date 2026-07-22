@@ -88,7 +88,13 @@ enum L10n {
     // MARK: - Settings: Hotkeys
 
     static let keyboardShortcutsTitle = isChinese ? "键盘快捷键" : "Keyboard Shortcuts"
-    static let showSwitcherLabel = isChinese ? "显示切换器：" : "Show Switcher:"
+    static let showSwitcherLabel = isChinese ? "切换快捷键" : "Switcher Hotkey"
+    static let optionTabFootnote = isChinese
+        ? "按住 Option 轻点 Tab 循环选择，松开 Option 完成切换。"
+        : "Hold Option and tap Tab to cycle; release Option to switch."
+    static let commandTabFootnote = isChinese
+        ? "接管系统 ⌘+Tab：应用运行期间将替代系统自带的应用切换器，退出应用后自动恢复。"
+        : "Takes over the system ⌘+Tab app switcher while this app is running; the native switcher is restored when the app quits."
     static let hotkeysTip1 = isChinese
         ? "按下快捷键可快速切换窗口。"
         : "Press the shortcut key to quickly switch between windows."

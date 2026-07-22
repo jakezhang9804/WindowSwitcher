@@ -42,6 +42,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupGlobalHotkey()
         setupAppBindingMonitor()
 
+        // Primary input path: CGEventTap (enables Cmd+Tab takeover and
+        // reliable modifier-release detection). Requires accessibility trust;
+        // falls back to the Carbon hotkey + NSEvent monitors when unavailable.
+        hotkeyService.startEventTap()
+
         // Check accessibility permission. Without it the global keyDown
         // monitors (number quick-select, Enter/Escape, Option+Key bindings)
         // receive nothing, so surface the state in the log for diagnosis.
@@ -148,7 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupGlobalHotkey() {
         // When Option+Tab is pressed → show the switcher (only if not already visible)
         hotkeyService.onShowSwitcher { [weak self] in
-            NSLog("[WS] Option+Tab triggered — showing switcher")
+            NSLog("[WS] Switcher hotkey triggered — showing switcher")
             DispatchQueue.main.async {
                 self?.showSwitcher()
             }
