@@ -8,10 +8,14 @@ private func _AXUIElementGetWindow(_ element: AXUIElement, _ windowID: inout CGW
 
 final class WindowService {
 
-    /// Get all visible windows, optionally filtered by allowed bundle IDs.
+    /// Get all switchable windows, optionally filtered by allowed bundle IDs.
     /// When `allowedBundleIDs` is empty, all windows are returned (no filter).
+    /// Includes windows on other Spaces and minimized ones (.optionAll) —
+    /// .optionOnScreenOnly only sees the current Space, which made windows
+    /// living on other desktops unreachable. Current-Space windows keep their
+    /// z-order at the front; off-Space/minimized ones follow.
     func getAllWindows(allowedBundleIDs: Set<String> = []) -> [WindowInfo] {
-        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        let options: CGWindowListOption = [.optionAll, .excludeDesktopElements]
         guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return []
         }
@@ -37,7 +41,8 @@ final class WindowService {
             windowCountByPID[ownerPID, default: 0] += 1
         }
 
-        var result: [WindowInfo] = []
+        var onScreenResult: [WindowInfo] = []
+        var offScreenResult: [WindowInfo] = []
 
         for windowDict in windowList {
             guard let ownerPID = windowDict[kCGWindowOwnerPID as String] as? pid_t else {
@@ -96,21 +101,28 @@ final class WindowService {
                 windowCount: count
             )
 
-            result.append(windowInfo)
+            let isOnScreen = (windowDict[kCGWindowIsOnscreen as String] as? Bool) ?? false
+            if isOnScreen {
+                onScreenResult.append(windowInfo)
+            } else {
+                offScreenResult.append(windowInfo)
+            }
         }
 
-        return result
+        return onScreenResult + offScreenResult
     }
 
-    /// Activate a specific window
+    /// Activate a specific window. Raise via AX FIRST, then activate the app:
+    /// making the window the app's main window is what pulls macOS to the
+    /// window's Space — activate() alone stays on the current Space.
     func activateWindow(_ window: WindowInfo) {
+        raiseWindow(window)
         if let app = NSRunningApplication(processIdentifier: window.appPID) {
             let activated = app.activate()
             NSLog("[WS] activateWindow: \(window.appName) pid=\(window.appPID) activate=\(activated) policy=\(app.activationPolicy.rawValue)")
         } else {
             NSLog("[WS] activateWindow: no NSRunningApplication for pid=\(window.appPID) (\(window.appName))")
         }
-        raiseWindow(window)
     }
 
     /// Activate the frontmost window of an app by bundle ID
@@ -204,6 +216,13 @@ final class WindowService {
     }
 
     private func raise(_ axWindow: AXUIElement) {
+        // Restore first if minimized — raise has no effect on a minimized window
+        var minimizedRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(axWindow, kAXMinimizedAttribute as CFString, &minimizedRef)
+        if (minimizedRef as? Bool) == true {
+            AXUIElementSetAttributeValue(axWindow, kAXMinimizedAttribute as CFString, false as CFTypeRef)
+        }
+
         AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
         AXUIElementSetAttributeValue(axWindow, kAXMainAttribute as CFString, true as CFTypeRef)
     }
