@@ -2,18 +2,28 @@ import SwiftUI
 import AppKit
 import AppSwitcherKit
 
+/// Panel layout style
+enum SwitcherLayout {
+    /// Vertical list panel (used for the left/right edge positions)
+    case list
+    /// Horizontal icon strip in the center of the screen, mirroring the
+    /// native macOS Cmd+Tab app switcher
+    case strip
+}
+
 /// Main switcher panel view.
 ///
 /// Interaction flow:
-/// 1. Panel opens with Option+Tab, second item pre-selected (last used window)
+/// 1. Panel opens with the hotkey, second item pre-selected (last used window)
 /// 2. Search bar is visible at the top but **inactive** by default (placeholder only)
-/// 3. While holding Option, each Tab press cycles to the next window
-/// 4. Releasing Option confirms the selection and switches to that window
+/// 3. While holding the modifier, each Tab press cycles to the next window
+/// 4. Releasing the modifier confirms the selection and switches to that window
 /// 5. Number keys 1-9 jump to the Nth item and confirm (when search is inactive)
 /// 6. Enter activates the search bar (when search is inactive) or confirms selection (when search is active)
 /// 7. Escape deactivates search (if active) or dismisses the panel
 struct SwitcherWindow: View {
     @ObservedObject var viewModel: SwitcherViewModel
+    var layout: SwitcherLayout = .list
     let onDismiss: () -> Void
     let onOpenSettings: () -> Void
     let onItemCountChange: (Int) -> Void
@@ -28,11 +38,13 @@ struct SwitcherWindow: View {
 
     init(
         viewModel: SwitcherViewModel,
+        layout: SwitcherLayout = .list,
         onDismiss: @escaping () -> Void,
         onOpenSettings: @escaping () -> Void,
         onItemCountChange: @escaping (Int) -> Void = { _ in }
     ) {
         self.viewModel = viewModel
+        self.layout = layout
         self.onDismiss = onDismiss
         self.onOpenSettings = onOpenSettings
         self.onItemCountChange = onItemCountChange
@@ -63,41 +75,12 @@ struct SwitcherWindow: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Search bar — always visible at top
-            searchBar
-
-            // Results list or empty state
-            let items = viewModel.displayItems
-            if items.isEmpty {
-                emptyState
-            } else {
-                SwitcherResultsList(
-                    items: items,
-                    selectedIndex: $viewModel.selectedIndex,
-                    searchText: viewModel.searchText,
-                    onSelect: { item in
-                        activateItem(item)
-                    },
-                    onHover: { index in
-                        if !mouseHasMoved {
-                            let location = NSEvent.mouseLocation
-                            guard abs(location.x - initialMouseLocation.x) > 2
-                                    || abs(location.y - initialMouseLocation.y) > 2 else { return }
-                            mouseHasMoved = true
-                        }
-                        viewModel.selectedIndex = index
-                    }
-                )
+        Group {
+            switch layout {
+            case .list: listBody
+            case .strip: stripBody
             }
-
-            // Bottom bar
-            bottomBar
         }
-        .frame(width: 340)
-        .fixedSize(horizontal: false, vertical: true)
-        .background(Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
         // Handle Tab and Arrow keys via SwiftUI for key repeat support
         .onKeyPress(.tab) {
             viewModel.selectNext()
@@ -125,7 +108,136 @@ struct SwitcherWindow: View {
             } else {
                 isTextFieldFocused = false
             }
+            // The strip panel grows when the search bar appears
+            onItemCountChange(viewModel.displayItems.count)
         }
+    }
+
+    // MARK: - List Layout (left/right edge panel)
+
+    private var listBody: some View {
+        VStack(spacing: 0) {
+            // Search bar — always visible at top
+            searchBar
+
+            // Results list or empty state
+            let items = viewModel.displayItems
+            if items.isEmpty {
+                emptyState
+            } else {
+                SwitcherResultsList(
+                    items: items,
+                    selectedIndex: $viewModel.selectedIndex,
+                    searchText: viewModel.searchText,
+                    onSelect: { item in
+                        activateItem(item)
+                    },
+                    onHover: { index in
+                        hoverSelect(index)
+                    }
+                )
+            }
+
+            // Bottom bar
+            bottomBar
+        }
+        .frame(width: 340)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    // MARK: - Strip Layout (native Cmd+Tab style, centered)
+
+    private var stripBody: some View {
+        VStack(spacing: 6) {
+            if viewModel.isSearchActive {
+                searchBar
+            }
+
+            let items = viewModel.displayItems
+            if items.isEmpty {
+                emptyState
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 2) {
+                            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                                stripIcon(item: item, isSelected: index == viewModel.selectedIndex)
+                                    .id(index)
+                                    .onTapGesture { activateItem(item) }
+                                    .onHover { isHovered in
+                                        if isHovered { hoverSelect(index) }
+                                    }
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                    }
+                    .onChange(of: viewModel.selectedIndex) { _, newValue in
+                        withAnimation(.easeOut(duration: 0.1)) {
+                            proxy.scrollTo(newValue, anchor: .center)
+                        }
+                    }
+                }
+
+                // Selected item caption — needed because multiple windows of
+                // the same app share an icon (unlike the app-level native switcher)
+                Text(selectedCaption)
+                    .font(.system(size: 12))
+                    .foregroundColor(secondaryText)
+                    .lineLimit(1)
+                    .padding(.horizontal, 16)
+                    .frame(height: 16)
+            }
+        }
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.clear)
+    }
+
+    private func stripIcon(item: SwitcherItem, isSelected: Bool) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 16)
+                .fill(isSelected ? Color.primary.opacity(0.18) : Color.clear)
+
+            if let icon = item.icon {
+                Image(nsImage: icon)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 60, height: 60)
+            } else {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(fillBg)
+                    .frame(width: 60, height: 60)
+                    .overlay(
+                        Image(systemName: "app")
+                            .font(.system(size: 26))
+                            .foregroundColor(tertiaryText)
+                    )
+            }
+        }
+        .frame(width: 76, height: 76)
+        .contentShape(Rectangle())
+    }
+
+    private var selectedCaption: String {
+        guard let item = viewModel.selectedItem else { return " " }
+        if let subtitle = item.subtitle, !subtitle.isEmpty, subtitle != item.displayName {
+            return "\(item.displayName) — \(subtitle)"
+        }
+        return item.displayName
+    }
+
+    /// Shared hover-selection with the stationary-cursor guard
+    private func hoverSelect(_ index: Int) {
+        if !mouseHasMoved {
+            let location = NSEvent.mouseLocation
+            guard abs(location.x - initialMouseLocation.x) > 2
+                    || abs(location.y - initialMouseLocation.y) > 2 else { return }
+            mouseHasMoved = true
+        }
+        viewModel.selectedIndex = index
     }
 
     // MARK: - Search Bar

@@ -347,9 +347,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             vm.refreshWindows()
         }
 
+        let layout = switcherLayout
+
         // Recreate content view each time to refresh window list
         let contentView = SwitcherWindow(
             viewModel: vm,
+            layout: layout,
             onDismiss: { [weak self] in
                 self?.hideSwitcher()
             },
@@ -368,6 +371,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         // Create NSVisualEffectView as the container for blur background
+        // (the centered strip uses the larger radius of the native switcher)
+        let cornerRadius: CGFloat = layout == .strip ? 22 : 12
         let visualEffectView = NSVisualEffectView()
         visualEffectView.material = .hudWindow
         visualEffectView.blendingMode = .behindWindow
@@ -375,9 +380,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Round the corners via maskImage — the sanctioned way for behindWindow
         // blending. Rounding only the layer leaves the blur region square,
         // which shows as opaque corner artifacts (white in light mode).
-        visualEffectView.maskImage = Self.roundedCornerMask(radius: 12)
+        visualEffectView.maskImage = Self.roundedCornerMask(radius: cornerRadius)
         visualEffectView.wantsLayer = true
-        visualEffectView.layer?.cornerRadius = 12
+        visualEffectView.layer?.cornerRadius = cornerRadius
         visualEffectView.layer?.masksToBounds = true
 
         // Create NSHostingView with SwiftUI content (transparent background)
@@ -399,15 +404,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         panel.contentView = visualEffectView
 
-        // Calculate panel height based on item count
-        // Search bar is always visible now (like TabTab)
+        // Size and position the panel for the chosen layout
         let windowCount = MainActor.assumeIsolated { vm.displayItems.count }
-        let panelHeight = calculatePanelHeight(itemCount: windowCount)
+        if layout == .strip {
+            positionStripPanel(panel, itemCount: windowCount, searchActive: false)
+        } else {
+            let panelHeight = calculatePanelHeight(itemCount: windowCount)
+            positionPanel(panel, height: panelHeight)
+        }
 
-        NSLog("[WS] panelHeight=\(panelHeight), items=\(windowCount)")
-
-        // Position panel based on user settings
-        positionPanel(panel, height: panelHeight)
+        NSLog("[WS] layout=\(layout), items=\(windowCount)")
 
         // Apply theme setting
         applyTheme(to: panel)
@@ -458,6 +464,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// keeping the top edge fixed so the search bar doesn't jump
     private func resizeSwitcherPanel(itemCount: Int) {
         guard let panel = switcherPanel, panel.isVisible else { return }
+
+        if switcherLayout == .strip {
+            let searchActive = MainActor.assumeIsolated {
+                switcherViewModel?.isSearchActive ?? false
+            }
+            positionStripPanel(panel, itemCount: itemCount, searchActive: searchActive)
+            return
+        }
+
         let height = calculatePanelHeight(itemCount: itemCount)
         var frame = panel.frame
         guard frame.height != height else { return }
@@ -537,26 +552,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switcherPanel = panel
     }
 
-    /// Position the panel based on user settings (left / center / right) and screen mode (focused / fixed)
-    private func positionPanel(_ panel: NSPanel, height: CGFloat) {
+    /// The layout for the switcher panel: the "center" position mirrors the
+    /// native Cmd+Tab switcher (horizontal icon strip); left/right keep the
+    /// vertical edge panel.
+    private var switcherLayout: SwitcherLayout {
         let position = UserDefaults.standard.string(forKey: "panelPosition") ?? "center"
-        let screenMode = UserDefaults.standard.string(forKey: "screenMode") ?? "focused"
+        return position == "center" ? .strip : .list
+    }
 
-        let screen: NSScreen
+    /// The screen the panel should appear on (focused / fixed setting)
+    private func targetScreen() -> NSScreen {
+        let screenMode = UserDefaults.standard.string(forKey: "screenMode") ?? "focused"
         if screenMode == "fixed" {
             let selectedIndex = UserDefaults.standard.integer(forKey: "selectedScreenIndex")
             let screens = NSScreen.screens
             if selectedIndex >= 0 && selectedIndex < screens.count {
-                screen = screens[selectedIndex]
-            } else {
-                screen = NSScreen.main ?? NSScreen.screens.first!
+                return screens[selectedIndex]
             }
-        } else {
-            // "focused" mode: use the screen that currently has the mouse cursor
-            let mouseLocation = NSEvent.mouseLocation
-            screen = NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) }) ?? NSScreen.main ?? NSScreen.screens.first!
+            return NSScreen.main ?? NSScreen.screens.first!
         }
+        // "focused" mode: use the screen that currently has the mouse cursor
+        let mouseLocation = NSEvent.mouseLocation
+        return NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) })
+            ?? NSScreen.main ?? NSScreen.screens.first!
+    }
 
+    /// Size and center the horizontal strip panel, native-switcher style:
+    /// width follows the item count up to the screen edge, centered on screen.
+    private func positionStripPanel(_ panel: NSPanel, itemCount: Int, searchActive: Bool) {
+        let screen = targetScreen()
+        let visible = screen.visibleFrame
+
+        // Cells are 76pt + 2pt spacing inside 14pt horizontal padding
+        let contentWidth = CGFloat(max(itemCount, 1)) * 76
+            + CGFloat(max(itemCount - 1, 0)) * 2 + 28
+        let width = min(max(contentWidth, 260), visible.width - 120)
+
+        // vertical padding 12×2 + icon cell 76 + spacing 6 + caption 16
+        var height: CGFloat = 122
+        if searchActive { height += 44 }
+        if itemCount == 0 { height = 164 }
+
+        let x = visible.midX - width / 2
+        let y = visible.midY - height / 2
+        panel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+    }
+
+    /// Position the list panel based on user settings (left / right) and screen mode (focused / fixed)
+    private func positionPanel(_ panel: NSPanel, height: CGFloat) {
+        let position = UserDefaults.standard.string(forKey: "panelPosition") ?? "center"
+        let screen = targetScreen()
         let screenFrame = screen.visibleFrame
         let panelWidth: CGFloat = 340
 
