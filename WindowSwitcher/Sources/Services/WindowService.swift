@@ -6,6 +6,26 @@ import ApplicationServices
 @_silgen_name("_AXUIElementGetWindow")
 private func _AXUIElementGetWindow(_ element: AXUIElement, _ windowID: inout CGWindowID) -> AXError
 
+/// Private SkyLight API (used by AltTab & co.): asks the WindowServer to
+/// bring a specific window of a process to front — including switching to
+/// the Space the window lives on, which no public API can do
+@_silgen_name("_SLPSSetFrontProcessWithOptions")
+private func _SLPSSetFrontProcessWithOptions(
+    _ psn: inout ProcessSerialNumber, _ windowID: CGWindowID, _ mode: UInt32
+) -> CGError
+
+/// Private SkyLight API: posts a window-server event record to a process,
+/// used to make the target window the key window after fronting it
+@_silgen_name("SLPSPostEventRecordTo")
+private func SLPSPostEventRecordTo(_ psn: inout ProcessSerialNumber, _ bytes: UnsafeMutablePointer<UInt8>) -> CGError
+
+/// Carbon API mapping a pid to its ProcessSerialNumber (deprecated but present)
+@_silgen_name("GetProcessForPID")
+private func GetProcessForPID(_ pid: pid_t, _ psn: inout ProcessSerialNumber) -> OSStatus
+
+/// kCPSUserGenerated — treat the fronting as user-initiated
+private let kSLPSUserGenerated: UInt32 = 0x200
+
 final class WindowService {
 
     /// Get all switchable windows, optionally filtered by allowed bundle IDs.
@@ -112,16 +132,59 @@ final class WindowService {
         return onScreenResult + offScreenResult
     }
 
-    /// Activate a specific window. Raise via AX FIRST, then activate the app:
-    /// making the window the app's main window is what pulls macOS to the
-    /// window's Space — activate() alone stays on the current Space.
+    /// Activate a specific window. AX raise handles current-Space and
+    /// minimized windows; windows on other Spaces are invisible to AX, so
+    /// those are fronted via the WindowServer (SkyLight), which also switches
+    /// to the target Space.
     func activateWindow(_ window: WindowInfo) {
-        raiseWindow(window)
+        let raised = raiseWindow(window)
+
+        if !raised {
+            NSLog("[WS] activateWindow: AX raise unavailable — fronting via WindowServer (space switch)")
+            frontWindowViaWindowServer(window)
+            // Once the Space switch lands the window becomes AX-visible;
+            // raise again so it also becomes the app's main window
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                _ = self?.raiseWindow(window)
+            }
+        }
+
         if let app = NSRunningApplication(processIdentifier: window.appPID) {
             let activated = app.activate()
-            NSLog("[WS] activateWindow: \(window.appName) pid=\(window.appPID) activate=\(activated) policy=\(app.activationPolicy.rawValue)")
+            NSLog("[WS] activateWindow: \(window.appName) pid=\(window.appPID) activate=\(activated) raised=\(raised)")
         } else {
             NSLog("[WS] activateWindow: no NSRunningApplication for pid=\(window.appPID) (\(window.appName))")
+        }
+    }
+
+    /// Front a specific window through the WindowServer — the AltTab
+    /// technique that works across Spaces where AX cannot see the window
+    private func frontWindowViaWindowServer(_ window: WindowInfo) {
+        var psn = ProcessSerialNumber()
+        guard GetProcessForPID(window.appPID, &psn) == noErr else {
+            NSLog("[WS] frontWindowViaWindowServer: no PSN for pid=\(window.appPID)")
+            return
+        }
+
+        _ = _SLPSSetFrontProcessWithOptions(&psn, window.id, kSLPSUserGenerated)
+
+        // Make the target window the key window: post synthetic window-server
+        // activate records (byte layout as used by AltTab/yabai)
+        var windowID = window.id
+        for eventKind: UInt8 in [0x01, 0x02] {
+            var bytes = [UInt8](repeating: 0, count: 0xf8)
+            bytes[0x04] = 0xf8
+            bytes[0x08] = eventKind
+            bytes[0x3a] = 0x10
+            memset(&bytes[0x20], 0xff, 0x10)
+            withUnsafeBytes(of: &windowID) { widBytes in
+                for (offset, byte) in widBytes.enumerated() {
+                    bytes[0x3c + offset] = byte
+                }
+            }
+            bytes.withUnsafeMutableBufferPointer { buffer in
+                _ = SLPSPostEventRecordTo(&psn, buffer.baseAddress!)
+            }
         }
     }
 
@@ -178,7 +241,10 @@ final class WindowService {
         }
     }
 
-    private func raiseWindow(_ window: WindowInfo) {
+    /// Raise the window via AX. Returns false when AX cannot see the window
+    /// (typical for windows on another Space).
+    @discardableResult
+    private func raiseWindow(_ window: WindowInfo) -> Bool {
         let appElement = AXUIElementCreateApplication(window.appPID)
         var windowsRef: CFTypeRef?
         let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
@@ -186,7 +252,7 @@ final class WindowService {
         guard result == .success,
               let windows = windowsRef as? [AXUIElement] else {
             NSLog("[WS] raiseWindow: AXWindows unavailable for \(window.appName) (AXError=\(result.rawValue))")
-            return
+            return false
         }
 
         // Prefer an exact CGWindowID match; fall back to the first title match
@@ -196,7 +262,7 @@ final class WindowService {
             var windowID: CGWindowID = 0
             if _AXUIElementGetWindow(axWindow, &windowID) == .success, windowID == window.id {
                 raise(axWindow)
-                return
+                return true
             }
 
             if titleMatch == nil {
@@ -210,9 +276,11 @@ final class WindowService {
 
         if let axWindow = titleMatch {
             raise(axWindow)
-        } else {
-            NSLog("[WS] raiseWindow: no AX match among \(windows.count) windows for id=\(window.id) title=\(window.title)")
+            return true
         }
+
+        NSLog("[WS] raiseWindow: no AX match among \(windows.count) windows for id=\(window.id) title=\(window.title)")
+        return false
     }
 
     private func raise(_ axWindow: AXUIElement) {

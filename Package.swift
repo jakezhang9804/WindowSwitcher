@@ -23,7 +23,16 @@ let package = Package(
                 .product(name: "PermissionFlow", package: "PermissionFlow"),
                 .product(name: "PermissionFlowScreenRecordingStatus", package: "PermissionFlow")
             ],
-            path: "WindowSwitcher/Sources"
+            path: "WindowSwitcher/Sources",
+            linkerSettings: [
+                // SkyLight hosts _SLPSSetFrontProcessWithOptions /
+                // SLPSPostEventRecordTo — needed to front windows on other
+                // Spaces (no public API can switch Space to a target window)
+                .unsafeFlags([
+                    "-F", "/System/Library/PrivateFrameworks",
+                    "-framework", "SkyLight"
+                ])
+            ]
         )
     ]
 )
