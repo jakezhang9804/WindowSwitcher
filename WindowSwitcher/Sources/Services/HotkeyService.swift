@@ -315,13 +315,18 @@ final class HotkeyService {
         }
 
         if isSwitcherActive {
-            // Reuse the monitor key handling (numbers, Enter, Escape, search)
-            if let nsEvent = NSEvent(cgEvent: event), handleKeyDown(nsEvent) {
+            // Shared key handling (numbers, Enter, Escape, Tab) straight from
+            // the CGEvent fields — NSEvent(cgEvent:) bridging is unreliable
+            // for tap events and silently dropped keys.
+            let nsFlags = NSEvent.ModifierFlags(rawValue: UInt(event.flags.rawValue))
+                .intersection(.deviceIndependentFlagsMask)
+            if handleKey(keyCode: UInt16(keyCode), flags: nsFlags, characters: nil) {
                 return nil
             }
             // Swallow any other combo while the trigger modifier is held so
             // shortcuts like Cmd+Q can't hit the frontmost app mid-switch
             if triggerHeld {
+                NSLog("[WS][Hotkey] Tap: swallowing keyCode=\(keyCode) (trigger modifier held)")
                 return nil
             }
         }
@@ -430,13 +435,23 @@ final class HotkeyService {
         }
     }
 
-    /// Handle keyDown events while switcher is active.
+    /// Handle keyDown events while switcher is active (NSEvent monitor path).
     /// Returns true if the event was consumed.
     @discardableResult
     private func handleKeyDown(_ event: NSEvent) -> Bool {
+        handleKey(
+            keyCode: event.keyCode,
+            flags: event.modifierFlags.intersection(.deviceIndependentFlagsMask),
+            characters: event.charactersIgnoringModifiers
+        )
+    }
+
+    /// Shared key handling for the tap and monitor paths. The tap passes raw
+    /// CGEvent fields — bridging tap events through NSEvent(cgEvent:) proved
+    /// unreliable and silently dropped keys.
+    private func handleKey(keyCode: UInt16, flags: NSEvent.ModifierFlags, characters: String?) -> Bool {
         guard isSwitcherActive else { return false }
 
-        let keyCode = event.keyCode
         let searchActive = isSearchActiveProvider?() ?? false
 
         // Enter (keyCode 36)
@@ -493,7 +508,6 @@ final class HotkeyService {
         // (When the recorded hotkey matches, Carbon consumes the event before we
         // see it, so this handles Shift+Tab and Tab presses the hotkey doesn't cover.)
         if keyCode == 48 {
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if flags.contains(.shift) {
                 NSLog("[WS][Hotkey] Shift+Tab — previous")
                 DispatchQueue.main.async { [weak self] in
@@ -512,10 +526,9 @@ final class HotkeyService {
         // from reaching any hidden text field
         if !searchActive {
             // Let modifier keys pass through
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if flags.isEmpty || flags == .shift {
                 // Plain key or Shift+key with no other modifiers
-                if let chars = event.charactersIgnoringModifiers, !chars.isEmpty {
+                if let chars = characters, !chars.isEmpty {
                     // Consume printable characters so they don't go to TextField
                     NSLog("[WS][Hotkey] Consuming key '\(chars)' (search inactive)")
                     return true

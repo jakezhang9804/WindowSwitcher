@@ -206,6 +206,15 @@ class SwitcherViewModel: ObservableObject {
     private static var lastCatalogRefresh: Date = .distantPast
     private static let catalogRefreshInterval: TimeInterval = 300
 
+    /// Warm the shared catalog cache at app launch. Without this, the first
+    /// panel open races the background scan and pinned apps whose windows are
+    /// minimized or on another Space are missing from the list.
+    static func warmInstalledAppsCache() {
+        guard cachedInstalledApps == nil else { return }
+        lastCatalogRefresh = Date()
+        refreshInstalledAppsCache(into: nil)
+    }
+
     private func loadInstalledApps() {
         if let cached = Self.cachedInstalledApps {
             installedApps = cached
@@ -215,9 +224,13 @@ class SwitcherViewModel: ObservableObject {
             return
         }
         Self.lastCatalogRefresh = Date()
+        Self.refreshInstalledAppsCache(into: self)
+    }
 
-        // Scanning /Applications and loading icons is slow — keep it off the main thread
-        Task.detached(priority: .userInitiated) { [weak self] in
+    /// Scanning /Applications and loading icons is slow — runs off the main
+    /// thread and publishes into the shared cache (and the given view model)
+    private static func refreshInstalledAppsCache(into viewModel: SwitcherViewModel?) {
+        Task.detached(priority: .userInitiated) { [weak viewModel] in
             let catalog = InstalledAppCatalog()
             let apps = catalog.fetchInstalledApps().map { app in
                 InstalledAppItem(
@@ -227,9 +240,9 @@ class SwitcherViewModel: ObservableObject {
                     path: app.bundlePath
                 )
             }
-            await MainActor.run { [weak self] in
+            await MainActor.run { [weak viewModel] in
                 Self.cachedInstalledApps = apps
-                self?.installedApps = apps
+                viewModel?.installedApps = apps
             }
         }
     }

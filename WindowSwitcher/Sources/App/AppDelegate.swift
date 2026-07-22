@@ -47,6 +47,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // falls back to the Carbon hotkey + NSEvent monitors when unavailable.
         hotkeyService.startEventTap()
 
+        // Warm the installed-app catalog so pinned apps without visible
+        // windows appear in the very first panel open after launch
+        MainActor.assumeIsolated {
+            SwitcherViewModel.warmInstalledAppsCache()
+        }
+
         // Check accessibility permission. Without it the global keyDown
         // monitors (number quick-select, Enter/Escape, Option+Key bindings)
         // receive nothing, so surface the state in the log for diagnosis.

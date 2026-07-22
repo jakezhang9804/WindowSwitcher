@@ -105,7 +105,10 @@ final class WindowService {
     /// Activate a specific window
     func activateWindow(_ window: WindowInfo) {
         if let app = NSRunningApplication(processIdentifier: window.appPID) {
-            app.activate()
+            let activated = app.activate()
+            NSLog("[WS] activateWindow: \(window.appName) pid=\(window.appPID) activate=\(activated) policy=\(app.activationPolicy.rawValue)")
+        } else {
+            NSLog("[WS] activateWindow: no NSRunningApplication for pid=\(window.appPID) (\(window.appName))")
         }
         raiseWindow(window)
     }
@@ -121,7 +124,46 @@ final class WindowService {
             }
             return
         }
-        app.activate()
+
+        let activated = app.activate()
+        NSLog("[WS] activateApp: \(bundleID) pid=\(app.processIdentifier) activate=\(activated) hidden=\(app.isHidden)")
+
+        if app.isHidden {
+            app.unhide()
+        }
+
+        // activate() alone never restores a minimized window — the app becomes
+        // active but nothing appears on screen, which reads as a failed switch
+        restoreMinimizedWindowIfNeeded(pid: app.processIdentifier)
+    }
+
+    /// If the app has windows but none are visible (all minimized), restore
+    /// and raise the first minimized one via the Accessibility API
+    private func restoreMinimizedWindowIfNeeded(pid: pid_t) {
+        let appElement = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement], !windows.isEmpty else {
+            return
+        }
+
+        var anyVisible = false
+        var firstMinimized: AXUIElement?
+        for axWindow in windows {
+            var minimizedRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(axWindow, kAXMinimizedAttribute as CFString, &minimizedRef)
+            if (minimizedRef as? Bool) == true {
+                if firstMinimized == nil { firstMinimized = axWindow }
+            } else {
+                anyVisible = true
+            }
+        }
+
+        if !anyVisible, let axWindow = firstMinimized {
+            NSLog("[WS] activateApp: all windows minimized (pid=\(pid)) — restoring one")
+            AXUIElementSetAttributeValue(axWindow, kAXMinimizedAttribute as CFString, false as CFTypeRef)
+            raise(axWindow)
+        }
     }
 
     private func raiseWindow(_ window: WindowInfo) {
@@ -131,6 +173,7 @@ final class WindowService {
 
         guard result == .success,
               let windows = windowsRef as? [AXUIElement] else {
+            NSLog("[WS] raiseWindow: AXWindows unavailable for \(window.appName) (AXError=\(result.rawValue))")
             return
         }
 
@@ -155,6 +198,8 @@ final class WindowService {
 
         if let axWindow = titleMatch {
             raise(axWindow)
+        } else {
+            NSLog("[WS] raiseWindow: no AX match among \(windows.count) windows for id=\(window.id) title=\(window.title)")
         }
     }
 

@@ -163,7 +163,7 @@ struct SwitcherWindow: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 2) {
                             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                                stripIcon(item: item, isSelected: index == viewModel.selectedIndex)
+                                stripIcon(item: item, isSelected: index == viewModel.selectedIndex, index: index)
                                     .id(index)
                                     .onTapGesture { activateItem(item) }
                                     .onHover { isHovered in
@@ -195,26 +195,40 @@ struct SwitcherWindow: View {
         .background(Color.clear)
     }
 
-    private func stripIcon(item: SwitcherItem, isSelected: Bool) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 16)
-                .fill(isSelected ? Color.primary.opacity(0.18) : Color.clear)
+    private func stripIcon(item: SwitcherItem, isSelected: Bool, index: Int) -> some View {
+        ZStack(alignment: .topTrailing) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(isSelected ? Color.primary.opacity(0.18) : Color.clear)
 
-            if let icon = item.icon {
-                Image(nsImage: icon)
-                    .resizable()
-                    .interpolation(.high)
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 60, height: 60)
-            } else {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(fillBg)
-                    .frame(width: 60, height: 60)
-                    .overlay(
-                        Image(systemName: "app")
-                            .font(.system(size: 26))
-                            .foregroundColor(tertiaryText)
+                if let icon = item.icon {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 60, height: 60)
+                } else {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(fillBg)
+                        .frame(width: 60, height: 60)
+                        .overlay(
+                            Image(systemName: "app")
+                                .font(.system(size: 26))
+                                .foregroundColor(tertiaryText)
+                        )
+                }
+            }
+
+            // Quick-select number badge (keys 1-9)
+            if index < 9 {
+                Text("\(index + 1)")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundColor(isSelected ? .primary : tertiaryText)
+                    .frame(width: 16, height: 16)
+                    .background(
+                        Circle().fill(isSelected ? Color.primary.opacity(0.2) : fillBg)
                     )
+                    .padding(4)
             }
         }
         .frame(width: 76, height: 76)
