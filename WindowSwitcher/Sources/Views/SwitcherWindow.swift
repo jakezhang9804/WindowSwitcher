@@ -20,8 +20,6 @@ struct SwitcherWindow: View {
 
     @FocusState private var isTextFieldFocused: Bool
 
-    @Environment(\.colorScheme) private var colorScheme
-
     /// Mouse position when the panel appeared. Hover-selection stays disabled until
     /// the mouse actually moves — the panel often opens under a stationary cursor,
     /// which would otherwise silently override the default "previous window" selection.
@@ -40,44 +38,28 @@ struct SwitcherWindow: View {
         self.onItemCountChange = onItemCountChange
     }
 
-    /// Adaptive foreground color that works in both light and dark modes
-    private var primaryText: Color {
-        colorScheme == .dark ? .white : .black
-    }
+    // Semantic system colors — they adapt to the panel appearance automatically
+    // and render with vibrancy inside the NSVisualEffectView, matching the
+    // label hierarchy Apple's own HUD panels use.
 
     /// Secondary text color
     private var secondaryText: Color {
-        colorScheme == .dark ? .white.opacity(0.45) : .black.opacity(0.45)
+        .secondary
     }
 
     /// Tertiary / muted text color
     private var tertiaryText: Color {
-        colorScheme == .dark ? .white.opacity(0.3) : .black.opacity(0.3)
+        Color(nsColor: .tertiaryLabelColor)
     }
 
     /// Very subtle text color (for branding, hints)
     private var subtleText: Color {
-        colorScheme == .dark ? .white.opacity(0.25) : .black.opacity(0.2)
+        Color(nsColor: .quaternaryLabelColor)
     }
 
-    /// Search bar background
-    private var searchBarBg: Color {
-        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
-    }
-
-    /// Selected item background
-    private var selectedBg: Color {
-        colorScheme == .dark ? Color.white.opacity(0.15) : Color.black.opacity(0.08)
-    }
-
-    /// Badge background
-    private var badgeBg: Color {
-        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
-    }
-
-    /// Placeholder icon background
-    private var placeholderBg: Color {
-        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
+    /// Neutral fill for the search bar, badges, and icon placeholders
+    private var fillBg: Color {
+        Color.primary.opacity(0.08)
     }
 
     var body: some View {
@@ -94,7 +76,6 @@ struct SwitcherWindow: View {
                     items: items,
                     selectedIndex: $viewModel.selectedIndex,
                     searchText: viewModel.searchText,
-                    colorScheme: colorScheme,
                     onSelect: { item in
                         activateItem(item)
                     },
@@ -167,7 +148,7 @@ struct SwitcherWindow: View {
                     TextField("", text: $viewModel.searchText)
                         .textFieldStyle(.plain)
                         .font(.system(size: 13))
-                        .foregroundColor(primaryText)
+                        .foregroundColor(.primary)
                         .focused($isTextFieldFocused)
                 }
 
@@ -193,7 +174,7 @@ struct SwitcherWindow: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(searchBarBg)
+        .background(fillBg)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .padding(.horizontal, 10)
         .padding(.top, 10)
@@ -247,7 +228,7 @@ struct SwitcherWindow: View {
                         .foregroundStyle(tertiaryText)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(badgeBg)
+                        .background(fillBg)
                         .clipShape(RoundedRectangle(cornerRadius: 4))
                 }
 
@@ -281,27 +262,19 @@ struct SwitcherResultsList: View {
     let items: [SwitcherItem]
     @Binding var selectedIndex: Int
     let searchText: String
-    let colorScheme: ColorScheme
     let onSelect: (SwitcherItem) -> Void
     let onHover: ((Int) -> Void)?
 
-    private var primaryText: Color {
-        colorScheme == .dark ? .white : .black
-    }
-    private var secondaryText: Color {
-        colorScheme == .dark ? .white.opacity(0.45) : .black.opacity(0.45)
+    /// Selection uses the user's accent color with white content, the same
+    /// treatment as Spotlight results and native menu highlights.
+    private var selectedBg: Color {
+        Color(nsColor: .controlAccentColor)
     }
     private var tertiaryText: Color {
-        colorScheme == .dark ? .white.opacity(0.3) : .black.opacity(0.3)
+        Color(nsColor: .tertiaryLabelColor)
     }
-    private var selectedBg: Color {
-        colorScheme == .dark ? Color.white.opacity(0.15) : Color.black.opacity(0.08)
-    }
-    private var badgeBg: Color {
-        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
-    }
-    private var placeholderBg: Color {
-        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
+    private var fillBg: Color {
+        Color.primary.opacity(0.08)
     }
 
     var body: some View {
@@ -338,12 +311,12 @@ struct SwitcherResultsList: View {
                     .frame(width: 28, height: 28)
             } else {
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(placeholderBg)
+                    .fill(isSelected ? Color.white.opacity(0.2) : fillBg)
                     .frame(width: 28, height: 28)
                     .overlay(
                         Image(systemName: "app")
                             .font(.system(size: 14))
-                            .foregroundColor(tertiaryText)
+                            .foregroundColor(isSelected ? .white : tertiaryText)
                     )
             }
 
@@ -351,13 +324,13 @@ struct SwitcherResultsList: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.displayName)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(primaryText)
+                    .foregroundColor(isSelected ? .white : .primary)
                     .lineLimit(1)
 
                 if let subtitle = item.subtitle, !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.system(size: 11))
-                        .foregroundColor(secondaryText)
+                        .foregroundColor(isSelected ? .white.opacity(0.75) : .secondary)
                         .lineLimit(1)
                 }
             }
@@ -368,9 +341,9 @@ struct SwitcherResultsList: View {
             if index < 9 {
                 Text("\(index + 1)")
                     .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundColor(tertiaryText)
+                    .foregroundColor(isSelected ? .white : tertiaryText)
                     .frame(width: 20, height: 20)
-                    .background(badgeBg)
+                    .background(isSelected ? Color.white.opacity(0.2) : fillBg)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
             }
         }

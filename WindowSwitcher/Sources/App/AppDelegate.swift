@@ -345,6 +345,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         visualEffectView.material = .hudWindow
         visualEffectView.blendingMode = .behindWindow
         visualEffectView.state = .active
+        // Round the corners via maskImage — the sanctioned way for behindWindow
+        // blending. Rounding only the layer leaves the blur region square,
+        // which shows as opaque corner artifacts (white in light mode).
+        visualEffectView.maskImage = Self.roundedCornerMask(radius: 12)
         visualEffectView.wantsLayer = true
         visualEffectView.layer?.cornerRadius = 12
         visualEffectView.layer?.masksToBounds = true
@@ -543,17 +547,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.setFrame(NSRect(x: x, y: y, width: panelWidth, height: height), display: true)
     }
 
-    /// Apply theme setting to the panel
+    /// Apply theme setting to the panel.
+    /// "system" leans dark on purpose: the switcher is a transient HUD overlay
+    /// and the dark appearance reads best over arbitrary desktop content
+    /// (same choice as TabTab / Alfred / Raycast). Explicit "light" still works.
     private func applyTheme(to panel: NSPanel) {
         let theme = UserDefaults.standard.string(forKey: "appTheme") ?? "system"
         switch theme {
         case "light":
             panel.appearance = NSAppearance(named: .aqua)
-        case "dark":
+        default: // dark & system
             panel.appearance = NSAppearance(named: .darkAqua)
-        default: // system
-            panel.appearance = nil
         }
+    }
+
+    /// A stretchable rounded-rect image used to mask the visual effect view
+    private static func roundedCornerMask(radius: CGFloat) -> NSImage {
+        let edge = radius * 2 + 1
+        let image = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: radius, left: radius, bottom: radius, right: radius)
+        image.resizingMode = .stretch
+        return image
     }
 
     // MARK: - Preferences
