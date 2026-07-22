@@ -66,6 +66,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: UserDefaults.standard
         )
 
+        // Dev hooks: allow driving the UI from the command line so visual
+        // states can be opened and screenshotted without keyboard input
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(openPreferences),
+            name: Notification.Name("com.windowswitcher.debug.openPreferences"),
+            object: nil
+        )
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(showSwitcherAction),
+            name: Notification.Name("com.windowswitcher.debug.showSwitcher"),
+            object: nil
+        )
+
         // Start automatic update checks
         UpdateService.shared.startAutomaticChecks()
 
@@ -594,7 +609,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let window = NSWindow(contentViewController: hostingController)
             window.title = "WindowSwitcher " + L10n.preferences
             window.styleMask = [.titled, .closable]
-            window.setContentSize(NSSize(width: 560, height: 520))
+            window.setContentSize(NSSize(width: 620, height: 700))
             window.center()
             window.isReleasedWhenClosed = false
 
@@ -614,7 +629,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         settingsWindowController?.showWindow(nil)
+
+        // Displays may have been rearranged/disconnected since the window was
+        // last positioned — recenter if it no longer lands on an active screen
+        if let window = settingsWindowController?.window,
+           !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(window.frame) }) {
+            window.center()
+        }
+
         NSApp.activate(ignoringOtherApps: true)
+
+        // Don't let the pinned-apps search field grab first responder — the
+        // form would auto-scroll to it and hide the sections above
+        DispatchQueue.main.async { [weak self] in
+            self?.settingsWindowController?.window?.makeFirstResponder(nil)
+        }
     }
 
     // MARK: - Quit

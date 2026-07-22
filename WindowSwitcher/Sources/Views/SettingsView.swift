@@ -23,7 +23,7 @@ struct SettingsView: View {
                     Label(L10n.aboutTab, systemImage: "info.circle")
                 }
         }
-        .frame(width: 560, height: 520)
+        .frame(width: 620, height: 700)
     }
 }
 
@@ -45,11 +45,15 @@ struct PreferencesTab: View {
             // (opens the right privacy pane and floats a drag-in helper panel)
             Section {
                 permissionRow(
+                    icon: "accessibility",
+                    iconColor: .blue,
                     title: L10n.accessibilityTitle,
                     description: L10n.accessibilityDescription,
                     pane: .accessibility
                 )
                 permissionRow(
+                    icon: "record.circle",
+                    iconColor: .purple,
                     title: L10n.screenRecordingTitle,
                     description: L10n.screenRecordingDescription,
                     pane: .screenRecording
@@ -62,11 +66,13 @@ struct PreferencesTab: View {
                     .foregroundColor(.secondary)
             }
 
-            // General
+            // General — switches on the right, matching System Settings
             Section(L10n.generalTitle) {
                 Toggle(L10n.showMenuBarIcon, isOn: $showMenuBarIcon)
                 Toggle(L10n.startAtLogin, isOn: $settingsVM.launchAtLogin)
             }
+            .toggleStyle(.switch)
+            .controlSize(.small)
 
             // Appearance
             Section(L10n.appearanceTitle) {
@@ -88,8 +94,6 @@ struct PreferencesTab: View {
                     Text(L10n.screenModeFocused).tag("focused")
                     Text(L10n.screenModeFixed).tag("fixed")
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
 
                 if screenMode == "fixed" {
                     Picker(L10n.screenModeFixed, selection: $selectedScreenIndex) {
@@ -98,8 +102,6 @@ struct PreferencesTab: View {
                         }
                     }
                 }
-            } header: {
-                Text(L10n.showOnScreenTitle)
             } footer: {
                 if screenMode == "fixed" {
                     Text("\(L10n.fixedScreenDescription) \(L10n.screensDetected(NSScreen.screens.count))")
@@ -108,10 +110,15 @@ struct PreferencesTab: View {
                 }
             }
 
-            // Pinned Apps
+            // Pinned Apps — bounded inner list like System Settings' Login Items
             Section {
-                TextField(L10n.searchAppsPlaceholder, text: $appConfigVM.searchText)
-                    .textFieldStyle(.roundedBorder)
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.secondary)
+                    TextField("", text: $appConfigVM.searchText, prompt: Text(L10n.searchAppsPlaceholder))
+                        .labelsHidden()
+                        .textFieldStyle(.plain)
+                }
 
                 if let errorMsg = appConfigVM.errorMessage {
                     Text(errorMsg)
@@ -125,9 +132,15 @@ struct PreferencesTab: View {
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.vertical, 12)
                 } else {
-                    ForEach(appConfigVM.filteredApps) { app in
-                        PinnedAppRow(app: app, viewModel: appConfigVM)
+                    List {
+                        ForEach(appConfigVM.filteredApps) { app in
+                            PinnedAppRow(app: app, viewModel: appConfigVM)
+                        }
                     }
+                    .listStyle(.bordered)
+                    .alternatingRowBackgrounds(.enabled)
+                    .environment(\.defaultMinListRowHeight, 30)
+                    .frame(height: 260)
                 }
             } header: {
                 Text(L10n.pinnedAppsTitle)
@@ -142,7 +155,13 @@ struct PreferencesTab: View {
 
     // MARK: - Permission Row
 
-    private func permissionRow(title: String, description: String, pane: PermissionFlowPane) -> some View {
+    private func permissionRow(
+        icon: String,
+        iconColor: Color,
+        title: String,
+        description: String,
+        pane: PermissionFlowPane
+    ) -> some View {
         LabeledContent {
             PermissionFlowButton(
                 pane: pane,
@@ -157,8 +176,20 @@ struct PreferencesTab: View {
                 }
             }
         } label: {
-            Text(title)
-            Text(description)
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.white)
+                    .frame(width: 26, height: 26)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(iconColor.gradient))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                    Text(description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 
@@ -205,13 +236,17 @@ struct PinnedAppRow: View {
 
             if viewModel.isPinned(app.bundleID) {
                 HStack(spacing: 4) {
-                    Text("Option +")
-                        .font(.system(size: 11))
+                    Text("⌥ +")
+                        .font(.system(size: 12))
                         .foregroundColor(.secondary)
 
-                    TextField("Key", text: $triggerKeyText)
+                    // In a Form the title parameter renders as a separate label
+                    // and wrecks the row layout — hide it and center the key
+                    TextField("", text: $triggerKeyText)
+                        .labelsHidden()
                         .textFieldStyle(.roundedBorder)
-                        .frame(width: 40)
+                        .multilineTextAlignment(.center)
+                        .frame(width: 36)
                         .font(.system(size: 12, design: .monospaced))
                         .onChange(of: triggerKeyText) { _, newValue in
                             let filtered = String(newValue.prefix(1)).uppercased()
@@ -230,7 +265,6 @@ struct PinnedAppRow: View {
                 }
             }
         }
-        .padding(.vertical, 2)
         .onAppear {
             triggerKeyText = viewModel.triggerKey(for: app.bundleID)
         }
@@ -272,9 +306,9 @@ struct AboutTab: View {
         VStack(spacing: 16) {
             Spacer()
 
-            Image(systemName: "rectangle.stack")
-                .font(.system(size: 56))
-                .foregroundColor(.accentColor)
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 96, height: 96)
 
             Text("WindowSwitcher")
                 .font(.title2)
