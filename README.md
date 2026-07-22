@@ -20,7 +20,11 @@
 
 ## Features
 
-**Window Switching** — Quickly switch between all open windows on your Mac with a single keyboard shortcut. Hold Option and press Tab to cycle through windows, release Option to confirm.
+**Window Switching** — Quickly switch between all open windows on your Mac with a single keyboard shortcut. Hold the modifier and press Tab to cycle through windows, release it to confirm. Windows on other Spaces and minimized windows are included — switching jumps straight to them.
+
+**⌘+Tab Takeover** — Optionally replace the system app switcher: choose `Command + Tab` in Hotkeys settings and WindowSwitcher intercepts it ahead of macOS (the native switcher is restored when the app quits). The default `Option + Tab` keeps the system switcher untouched.
+
+**Native Switcher Look** — With the Center panel position, the switcher appears as a horizontal icon strip in the middle of the screen, mirroring the native macOS Cmd+Tab switcher — with number badges for quick select and a caption naming the selected window. Left/Right positions show a vertical list panel at the screen edge.
 
 **Global App Search** — Type to search not only open windows but also all installed applications on your system. Open windows are prioritized at the top, with matching installed apps listed below. Select any app to launch it instantly.
 
@@ -41,13 +45,13 @@
 
 | Action | Shortcut |
 |--------|----------|
-| Open switcher | `Option + Tab` |
+| Open switcher | `Option + Tab` (or `Command + Tab` when takeover is enabled) |
 | Cycle to next window | `Tab` or `↓` |
 | Cycle to previous window | `Shift + Tab` or `↑` |
-| Activate selected window | Release `Option` or press `Enter` |
+| Activate selected window | Release the modifier or press `Enter` |
 | Quick select | `1` – `9` |
-| Search windows and apps | Just start typing |
-| Clear search | `Escape` |
+| Activate search | `Enter` (when search is inactive) |
+| Clear search / deactivate | `Escape` |
 | Dismiss panel | `Escape` (when search is empty) |
 
 ## Settings
@@ -56,11 +60,12 @@ WindowSwitcher provides a comprehensive preferences panel accessible from the me
 
 | Section | Options |
 |---------|---------|
+| **Permissions** | Live permission status with guided grant flow (PermissionFlow) |
 | **General** | Show menu bar icon, Start at login |
 | **Appearance** | Theme (System / Light / Dark), Panel position (Left / Center / Right) |
 | **Display** | Choose which screen the panel appears on (shows actual monitor names) |
 | **Pinned Apps** | Select apps to pin — the switcher will only cycle through pinned apps; optionally assign per-app trigger keys (A–Z, 0–9) |
-| **Hotkeys** | Customize the global keyboard shortcut |
+| **Hotkeys** | `Option + Tab` or `Command + Tab` (system switcher takeover) |
 | **About** | Version info, update check, links |
 
 ## Tech Stack
@@ -70,9 +75,12 @@ WindowSwitcher provides a comprehensive preferences panel accessible from the me
 | **Swift 5.9+** | Primary language |
 | **SwiftUI** | User interface |
 | **AppKit** | System integration (NSPanel, NSVisualEffectView, menu bar) |
-| **Accessibility API** | Window enumeration and activation |
-| **CGWindowList** | Window information retrieval |
-| **KeyboardShortcuts** | Global hotkey management ([sindresorhus/KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts)) |
+| **CGEventTap** | Primary input path — hotkey interception (incl. ⌘+Tab takeover) and reliable modifier-release detection |
+| **Accessibility API** | Window activation and raising |
+| **CGWindowList** | Window enumeration across Spaces |
+| **SkyLight (private)** | Fronting windows that live on other Spaces |
+| **KeyboardShortcuts** | Carbon hotkey fallback ([sindresorhus/KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts)) |
+| **PermissionFlow** | Guided permission onboarding ([jaywcjlove/PermissionFlow](https://github.com/jaywcjlove/PermissionFlow)) |
 | **AppSwitcherKit** | Local library for settings storage, app catalog, and pinned app bindings |
 
 ## Project Structure
