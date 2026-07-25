@@ -23,6 +23,29 @@ enum L10n {
     static let noResultsHint = isChinese ? "尝试其他搜索词" : "Try a different search term"
     static let noWindows = isChinese ? "没有打开的窗口" : "No open windows"
 
+    // MARK: - App Groups
+
+    static func groupMembers(_ count: Int) -> String {
+        isChinese ? "\(count) 个应用" : "\(count) app\(count == 1 ? "" : "s")"
+    }
+    static let appGroupsTitle = isChinese ? "应用分组（屏幕录制）" : "App Groups (Screen Recording)"
+    static let appGroupsDescription = isChinese
+        ? "把某块屏幕上当前摆好的窗口录制成一个分组。切换到分组时会启动其中的应用、把每个窗口还原到录制时的位置和大小并全部前置。分组里的应用不会再单独出现在切换器中。"
+        : "Record the windows currently arranged on a screen as one group. Switching to it launches those apps, restores each window to its recorded position and size, and brings them forward. Apps in a group no longer appear standalone in the switcher."
+    static let groupRecordNew = isChinese ? "录制此屏幕为新分组" : "Record screen as new group"
+    static let groupUpdateRecording = isChinese ? "更新录制" : "Re-record"
+    static let deleteGroup = isChinese ? "删除" : "Delete"
+    static let groupNamePlaceholder = isChinese ? "分组名称" : "Group name"
+    static let groupDefaultName = isChinese ? "分组" : "Group"
+    static let groupNoGroups = isChinese ? "还没有分组，选择屏幕后点「录制此屏幕为新分组」" : "No groups yet — pick a screen and click \"Record screen as new group\""
+    static let groupRecordEmpty = isChinese ? "该屏幕上没有可录制的窗口" : "No recordable windows on that screen"
+    static func groupRecordedApps(_ count: Int) -> String {
+        isChinese ? "已录制 \(count) 个应用" : "Recorded \(count) app\(count == 1 ? "" : "s")"
+    }
+    static func groupScreenName(_ index: Int, _ name: String) -> String {
+        isChinese ? "屏幕 \(index + 1)：\(name)" : "Screen \(index + 1): \(name)"
+    }
+
     // MARK: - Settings: Tabs
 
     static let preferencesTab = isChinese ? "偏好设置" : "Preferences"

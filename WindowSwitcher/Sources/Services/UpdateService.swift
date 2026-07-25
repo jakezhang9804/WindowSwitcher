@@ -43,6 +43,9 @@ final class UpdateService: ObservableObject {
 
     /// Start automatic update checking (call once at app launch)
     func startAutomaticChecks() {
+        // Idempotent — never leave a previous timer running
+        stopAutomaticChecks()
+
         // Initial check after 10 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
             Task { @MainActor in
@@ -79,16 +82,25 @@ final class UpdateService: ObservableObject {
 
     /// Open the release page in the default browser
     func openReleasePage() {
-        if let url = releaseURL {
+        if let url = releaseURL, isTrustedHost(url) {
             NSWorkspace.shared.open(url)
         }
     }
 
     /// Open the download URL (DMG/ZIP) in the default browser
     func openDownload() {
-        if let url = downloadURL ?? releaseURL {
+        if let url = downloadURL ?? releaseURL, isTrustedHost(url) {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// Defense-in-depth: only ever open URLs on GitHub's own hosts, even though
+    /// they come from the hardcoded repo's API response
+    private func isTrustedHost(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        return host == "github.com"
+            || host.hasSuffix(".github.com")
+            || host.hasSuffix(".githubusercontent.com")
     }
 
     // MARK: - Private Methods
@@ -170,10 +182,18 @@ final class UpdateService: ObservableObject {
         return try decoder.decode(GitHubRelease.self, from: data)
     }
 
+    /// Parse a version into numeric components, tolerating suffixes like
+    /// "1.2.0-beta" → [1,2,0] or "1.2.3+build" → [1,2,3] (leading digits per part)
+    private func versionComponents(_ s: String) -> [Int] {
+        s.split(separator: ".").map { part in
+            Int(part.prefix { $0.isNumber }) ?? 0
+        }
+    }
+
     /// Simple semantic version comparison: "1.2.0" > "1.1.0"
     private func isVersion(_ a: String, newerThan b: String) -> Bool {
-        let aParts = a.split(separator: ".").compactMap { Int($0) }
-        let bParts = b.split(separator: ".").compactMap { Int($0) }
+        let aParts = versionComponents(a)
+        let bParts = versionComponents(b)
 
         let maxLen = max(aParts.count, bParts.count)
         for i in 0..<maxLen {

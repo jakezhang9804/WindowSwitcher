@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import AppSwitcherKit
 
 /// Private-but-stable AX API that maps an AXUIElement to its CGWindowID,
 /// letting us raise the exact window instead of guessing by title
@@ -293,5 +294,328 @@ final class WindowService {
 
         AXUIElementPerformAction(axWindow, kAXRaiseAction as CFString)
         AXUIElementSetAttributeValue(axWindow, kAXMainAttribute as CFString, true as CFTypeRef)
+    }
+
+    // MARK: - App Groups
+
+    /// Bundle IDs are case-insensitive on macOS — the app catalog and
+    /// NSRunningApplication can report different casing, so never compare with `==`
+    private func runningApp(forBundleID bundleID: String) -> NSRunningApplication? {
+        NSWorkspace.shared.runningApplications.first {
+            $0.bundleIdentifier?.caseInsensitiveCompare(bundleID) == .orderedSame
+        }
+    }
+
+    /// The result of recording a screen: the apps found on it (front-to-back
+    /// order, so the frontmost app is first and ends up focused on activation)
+    /// and each app's window frame.
+    struct ScreenRecording {
+        let bundleIDs: [String]
+        let frames: [String: AppGroupWindowFrame]
+    }
+
+    /// Record every app that currently has a window on the given screen, along
+    /// with that window's frame. This is how a group is defined — the user
+    /// arranges a screen, then records it; no manual app selection.
+    ///
+    /// CGWindow bounds and AX position share the same coordinate space
+    /// (top-left origin, y downward, origin at the primary screen's top-left),
+    /// so bounds are stored directly as restorable frames.
+    ///
+    /// The list is front-to-back, so the FIRST window seen per app is its
+    /// frontmost one — recorded as the app's representative frame. Restore
+    /// targets the app's main window, which is that same frontmost window, so
+    /// record and restore stay consistent for the common single-window case.
+    func recordScreen(screenIndex: Int) -> ScreenRecording {
+        let screens = NSScreen.screens
+        guard screens.indices.contains(screenIndex) else {
+            return ScreenRecording(bundleIDs: [], frames: [:])
+        }
+        let screenRect = axRect(fromAppKit: screens[screenIndex].frame)
+
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return ScreenRecording(bundleIDs: [], frames: [:])
+        }
+
+        let appsByPID = Dictionary(
+            NSWorkspace.shared.runningApplications.map { ($0.processIdentifier, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let currentBundleID = Bundle.main.bundleIdentifier?.lowercased()
+
+        var orderedBundleIDs: [String] = []
+        var frames: [String: AppGroupWindowFrame] = [:]
+
+        for dict in list {
+            guard let layer = dict[kCGWindowLayer as String] as? Int, layer == 0,
+                  let name = dict[kCGWindowName as String] as? String, !name.isEmpty,
+                  let pid = dict[kCGWindowOwnerPID as String] as? pid_t,
+                  let boundsDict = dict[kCGWindowBounds as String] as? [String: CGFloat] else {
+                continue
+            }
+            guard let bundleID = appsByPID[pid]?.bundleIdentifier,
+                  bundleID.lowercased() != currentBundleID else {
+                continue
+            }
+            let rect = CGRect(
+                x: boundsDict["X"] ?? 0, y: boundsDict["Y"] ?? 0,
+                width: boundsDict["Width"] ?? 0, height: boundsDict["Height"] ?? 0
+            )
+            guard rect.width >= 50, rect.height >= 50,
+                  screenRect.contains(CGPoint(x: rect.midX, y: rect.midY)) else {
+                continue
+            }
+
+            // First (frontmost) window per app wins — matches restore's main window
+            guard frames[bundleID] == nil else { continue }
+            frames[bundleID] = AppGroupWindowFrame(
+                x: Double(rect.minX), y: Double(rect.minY),
+                width: Double(rect.width), height: Double(rect.height)
+            )
+            orderedBundleIDs.append(bundleID)
+        }
+
+        return ScreenRecording(bundleIDs: orderedBundleIDs, frames: frames)
+    }
+
+    /// Activate an app group: launch members that aren't running, re-open a
+    /// window for members that are running but window-less, restore each
+    /// member's saved frame (or move it to the bound screen when no layout was
+    /// captured), bring them all to the front, and leave the FIRST member focused.
+    func activateGroup(_ group: AppGroup) {
+        let screens = NSScreen.screens
+        let targetScreen = screens.indices.contains(group.screenIndex)
+            ? screens[group.screenIndex]
+            : (NSScreen.main ?? screens.first)
+        guard let targetScreen else { return }
+
+        NSLog("[WS][Group] Activating '\(group.name)' → screen \(group.screenIndex) (\(targetScreen.localizedName)), layout=\(group.hasCapturedLayout)")
+
+        // The first member is the intended focus — only it should end up frontmost
+        let focusBundleID = group.bundleIDs.first
+
+        // Activate in reverse so the first member ends up frontmost
+        for bundleID in group.bundleIDs.reversed() {
+            let savedFrame = frameLookup(group.frames, bundleID: bundleID)
+            let isFocus = bundleID.caseInsensitiveCompare(focusBundleID ?? "") == .orderedSame
+
+            guard let app = runningApp(forBundleID: bundleID) else {
+                // Not running → launch, then place its windows once they appear
+                if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+                    NSLog("[WS][Group] Launching \(bundleID)")
+                    NSWorkspace.shared.openApplication(at: url, configuration: .init())
+                    placeWindowsAfterLaunch(bundleID: bundleID, savedFrame: savedFrame, to: targetScreen, focus: isFocus)
+                } else {
+                    NSLog("[WS][Group] Could not resolve app for \(bundleID)")
+                }
+                continue
+            }
+
+            app.unhide()
+
+            if !hasVisibleWindow(pid: app.processIdentifier) {
+                // Running but no visible window (all closed to the menu bar, or
+                // only minimized ones) — re-open to recreate/restore a window,
+                // then place it once it appears
+                NSLog("[WS][Group] \(bundleID) running but no visible window — reopening")
+                reopen(app)
+                placeWindowsAfterLaunch(bundleID: bundleID, savedFrame: savedFrame, to: targetScreen, focus: isFocus)
+            } else {
+                placeAppWindows(pid: app.processIdentifier, savedFrame: savedFrame, to: targetScreen)
+                app.activate()
+            }
+        }
+    }
+
+    /// Whether the app has at least one non-minimized window. `kAXWindowsAttribute`
+    /// still lists minimized windows, so an app whose only window is minimized
+    /// would otherwise look like it has a window when it has nothing visible.
+    private func hasVisibleWindow(pid: pid_t) -> Bool {
+        AccessibilityService.getWindows(for: pid).contains { window in
+            var minimizedRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &minimizedRef) == .success,
+               let minimized = minimizedRef as? Bool {
+                return !minimized
+            }
+            return true // attribute missing → assume visible
+        }
+    }
+
+    /// Trigger an app to recreate a window (the dock-icon-click behavior). For a
+    /// running app, re-opening its bundle URL delivers a "reopen" event, which
+    /// apps like Slack/Notion answer by showing a window again.
+    private func reopen(_ app: NSRunningApplication) {
+        guard let url = app.bundleURL else { return }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config)
+    }
+
+    /// A freshly launched or re-opened app creates its windows at an
+    /// unpredictable time — poll (up to ~8s) and place them once they exist.
+    /// Only the focus member re-activates on completion, so a late-launching
+    /// non-focus member can't steal focus from the intended first member.
+    private func placeWindowsAfterLaunch(
+        bundleID: String,
+        savedFrame: AppGroupWindowFrame?,
+        to targetScreen: NSScreen,
+        focus: Bool,
+        attempt: Int = 0
+    ) {
+        guard attempt < 10 else {
+            NSLog("[WS][Group] Gave up waiting for windows of \(bundleID)")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self = self else { return }
+            if let app = self.runningApp(forBundleID: bundleID),
+               self.hasVisibleWindow(pid: app.processIdentifier) {
+                NSLog("[WS][Group] Windows of \(bundleID) appeared (attempt \(attempt)) — placing")
+                self.placeAppWindows(pid: app.processIdentifier, savedFrame: savedFrame, to: targetScreen)
+                if focus { app.activate() }
+            } else {
+                self.placeWindowsAfterLaunch(bundleID: bundleID, savedFrame: savedFrame, to: targetScreen, focus: focus, attempt: attempt + 1)
+            }
+        }
+    }
+
+    /// Place an app's windows: restore the exact saved frame when one exists,
+    /// otherwise move windows onto the bound screen (relative position preserved).
+    private func placeAppWindows(pid: pid_t, savedFrame: AppGroupWindowFrame?, to targetScreen: NSScreen) {
+        if let saved = savedFrame {
+            restoreFrame(pid: pid, savedFrame: saved, boundScreen: targetScreen)
+        } else {
+            moveAppWindows(pid: pid, to: targetScreen)
+        }
+    }
+
+    /// Restore the app's main window to a saved position and size. If the saved
+    /// frame no longer fits any screen, clamp it onto the bound screen.
+    private func restoreFrame(pid: pid_t, savedFrame: AppGroupWindowFrame, boundScreen: NSScreen) {
+        guard let window = mainWindow(pid: pid) else { return }
+
+        var origin = CGPoint(x: savedFrame.x, y: savedFrame.y)
+        let size = CGSize(width: savedFrame.width, height: savedFrame.height)
+
+        // If the saved origin isn't on any current screen, clamp onto the bound one
+        if screenContaining(axPoint: CGPoint(x: origin.x + size.width / 2, y: origin.y + size.height / 2)) == nil {
+            let bound = axRect(fromAppKit: boundScreen.visibleFrame)
+            origin.x = min(max(origin.x, bound.minX), max(bound.maxX - size.width, bound.minX))
+            origin.y = min(max(origin.y, bound.minY), max(bound.maxY - size.height, bound.minY))
+        }
+
+        NSLog("[WS][Group] Restoring window (pid \(pid)) → \(Int(origin.x)),\(Int(origin.y)) \(Int(size.width))×\(Int(size.height))")
+        // Set size before and after the move: some apps clamp size to the
+        // current screen, so a second pass lands the intended dimensions
+        setAXSize(window, size)
+        setAXPosition(window, origin)
+        setAXSize(window, size)
+    }
+
+    /// Move every standard window of the app to the target screen, preserving
+    /// each window's relative position within its current screen.
+    private func moveAppWindows(pid: pid_t, to targetScreen: NSScreen) {
+        let windows = AccessibilityService.getWindows(for: pid)
+        guard !windows.isEmpty else { return }
+
+        let targetFrame = axRect(fromAppKit: targetScreen.visibleFrame)
+
+        for window in windows {
+            guard let frame = axFrame(of: window), frame.width > 1, frame.height > 1 else { continue }
+
+            // Already on the target screen → leave it alone
+            let center = CGPoint(x: frame.midX, y: frame.midY)
+            if targetFrame.contains(center) { continue }
+
+            // Preserve the window's relative position within its current screen
+            let sourceScreen = screenContaining(axPoint: center) ?? NSScreen.main ?? targetScreen
+            let sourceFrame = axRect(fromAppKit: sourceScreen.visibleFrame)
+
+            let relX = sourceFrame.width > 0 ? (frame.minX - sourceFrame.minX) / sourceFrame.width : 0
+            let relY = sourceFrame.height > 0 ? (frame.minY - sourceFrame.minY) / sourceFrame.height : 0
+
+            var newX = targetFrame.minX + relX * targetFrame.width
+            var newY = targetFrame.minY + relY * targetFrame.height
+
+            // Clamp so the window stays reachable on the target screen
+            newX = min(max(newX, targetFrame.minX), max(targetFrame.maxX - frame.width, targetFrame.minX))
+            newY = min(max(newY, targetFrame.minY), max(targetFrame.maxY - frame.height, targetFrame.minY))
+
+            NSLog("[WS][Group] Moving window (pid \(pid)) \(Int(frame.minX)),\(Int(frame.minY)) → \(Int(newX)),\(Int(newY))")
+            setAXPosition(window, CGPoint(x: newX, y: newY))
+        }
+    }
+
+    /// Case-insensitive lookup into a group's saved-frame dictionary
+    private func frameLookup(_ frames: [String: AppGroupWindowFrame], bundleID: String) -> AppGroupWindowFrame? {
+        if let exact = frames[bundleID] { return exact }
+        return frames.first { $0.key.caseInsensitiveCompare(bundleID) == .orderedSame }?.value
+    }
+
+    /// The app's main window (or its first window as a fallback)
+    private func mainWindow(pid: pid_t) -> AXUIElement? {
+        let appElement = AXUIElementCreateApplication(pid)
+        var mainRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElement, kAXMainWindowAttribute as CFString, &mainRef) == .success,
+           let mainValue = mainRef, CFGetTypeID(mainValue) == AXUIElementGetTypeID() {
+            return (mainValue as! AXUIElement)
+        }
+        return AccessibilityService.getWindows(for: pid).first
+    }
+
+    // MARK: - AX Geometry Helpers
+
+    /// AX coordinates use a top-left origin (y grows downward, origin at the
+    /// primary screen's top-left); AppKit uses bottom-left. Flip around the
+    /// primary screen's top edge.
+    private var primaryScreenMaxY: CGFloat {
+        NSScreen.screens.first?.frame.maxY ?? 0
+    }
+
+    private func axRect(fromAppKit rect: NSRect) -> CGRect {
+        CGRect(
+            x: rect.minX,
+            y: primaryScreenMaxY - rect.maxY,
+            width: rect.width,
+            height: rect.height
+        )
+    }
+
+    private func screenContaining(axPoint point: CGPoint) -> NSScreen? {
+        NSScreen.screens.first { axRect(fromAppKit: $0.frame).contains(point) }
+    }
+
+    /// Read a window's frame in AX (top-left origin) coordinates
+    private func axFrame(of window: AXUIElement) -> CGRect? {
+        var posRef: CFTypeRef?
+        var sizeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &posRef) == .success,
+              AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeRef) == .success,
+              let posValue = posRef, let sizeValue = sizeRef,
+              CFGetTypeID(posValue) == AXValueGetTypeID(),
+              CFGetTypeID(sizeValue) == AXValueGetTypeID() else {
+            return nil
+        }
+
+        var position = CGPoint.zero
+        var size = CGSize.zero
+        // swiftlint:disable force_cast
+        AXValueGetValue(posValue as! AXValue, .cgPoint, &position)
+        AXValueGetValue(sizeValue as! AXValue, .cgSize, &size)
+        // swiftlint:enable force_cast
+        return CGRect(origin: position, size: size)
+    }
+
+    private func setAXPosition(_ window: AXUIElement, _ point: CGPoint) {
+        var position = point
+        guard let value = AXValueCreate(.cgPoint, &position) else { return }
+        AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value)
+    }
+
+    private func setAXSize(_ window: AXUIElement, _ size: CGSize) {
+        var size = size
+        guard let value = AXValueCreate(.cgSize, &size) else { return }
+        AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, value)
     }
 }

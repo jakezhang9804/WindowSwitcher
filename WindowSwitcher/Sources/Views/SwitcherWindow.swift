@@ -201,7 +201,9 @@ struct SwitcherWindow: View {
                 RoundedRectangle(cornerRadius: 16)
                     .fill(isSelected ? Color.primary.opacity(0.18) : Color.clear)
 
-                if let icon = item.icon {
+                if let groupIcons = item.groupIcons {
+                    GroupStackIcon(icons: groupIcons, size: 60)
+                } else if let icon = item.icon {
                     Image(nsImage: icon)
                         .resizable()
                         .interpolation(.high)
@@ -428,8 +430,10 @@ struct SwitcherResultsList: View {
 
     private func resultItem(item: SwitcherItem, isSelected: Bool, index: Int) -> some View {
         HStack(spacing: 10) {
-            // App icon
-            if let icon = item.icon {
+            // App icon (composite stack for groups)
+            if let groupIcons = item.groupIcons {
+                GroupStackIcon(icons: groupIcons, size: 28)
+            } else if let icon = item.icon {
                 Image(nsImage: icon)
                     .resizable()
                     .interpolation(.high)
@@ -480,5 +484,55 @@ struct SwitcherResultsList: View {
                 .fill(isSelected ? selectedBg : Color.clear)
         )
         .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Group Stack Icon
+
+/// Composite icon for an app group: member icons overlapping diagonally on a
+/// screen-shaped backdrop — "the apps as they sit on the screen".
+struct GroupStackIcon: View {
+    let icons: [NSImage]
+    let size: CGFloat
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var backdrop: Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
+    }
+    private var border: Color {
+        colorScheme == .dark ? Color.white.opacity(0.18) : Color.black.opacity(0.15)
+    }
+
+    var body: some View {
+        let shown = Array(icons.prefix(3))
+        let iconSize = size * (shown.count == 1 ? 0.62 : 0.52)
+        // Cascade from top-leading to bottom-trailing across the backdrop
+        let span = size * 0.32
+        let step = shown.count > 1 ? span / CGFloat(shown.count - 1) : 0
+        let start = -span / 2
+
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 0.18)
+                .fill(backdrop)
+                .overlay(
+                    RoundedRectangle(cornerRadius: size * 0.18)
+                        .strokeBorder(border, lineWidth: 1)
+                )
+
+            ForEach(Array(shown.enumerated()), id: \.offset) { index, icon in
+                Image(nsImage: icon)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: iconSize, height: iconSize)
+                    .shadow(color: .black.opacity(0.25), radius: size * 0.03, x: 0, y: size * 0.015)
+                    .offset(
+                        x: start + step * CGFloat(index),
+                        y: start + step * CGFloat(index)
+                    )
+            }
+        }
+        .frame(width: size, height: size)
     }
 }

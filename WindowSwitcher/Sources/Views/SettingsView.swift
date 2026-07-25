@@ -110,6 +110,17 @@ struct PreferencesTab: View {
                 }
             }
 
+            // App Groups — record a screen's window layout as one switcher entry
+            Section {
+                AppGroupsSection(appConfigVM: appConfigVM)
+            } header: {
+                Text(L10n.appGroupsTitle)
+            } footer: {
+                Text(L10n.appGroupsDescription)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             // Pinned Apps — bounded inner list like System Settings' Login Items
             Section {
                 HStack(spacing: 6) {
@@ -536,8 +547,14 @@ class AppConfigViewModel: ObservableObject {
 
     private func saveSettings() {
         errorMessage = nil
+        // Read-modify-write only THIS view model's domain (pins + bindings) onto
+        // the freshly persisted settings, so a concurrent App Groups edit isn't
+        // clobbered by this view model's stale snapshot.
+        var persisted = settingsStore.load()
+        persisted.allowedBundleIDs = currentSettings.allowedBundleIDs
+        persisted.appBindings = currentSettings.appBindings
         do {
-            try settingsStore.save(currentSettings)
+            try settingsStore.save(persisted)
             currentSettings = settingsStore.load()
             NotificationCenter.default.post(name: .switcherSettingsDidChange, object: nil)
         } catch {
@@ -546,6 +563,216 @@ class AppConfigViewModel: ObservableObject {
             currentSettings = settingsStore.load()
             errorMessage = error.localizedDescription
         }
+    }
+}
+
+// MARK: - App Groups Section
+
+/// A group is a *screen recording*: pick a screen, arrange your windows, record.
+/// The apps on that screen (and their positions/sizes) become the group. There
+/// is no manual app selection — members are whatever is on the screen.
+struct AppGroupsSection: View {
+    @ObservedObject var appConfigVM: AppConfigViewModel
+    @StateObject private var groupsVM = AppGroupsViewModel()
+
+    private let windowService = WindowService()
+
+    @State private var recordScreenIndex = 0
+    @State private var lastActionMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Record a new group from a screen
+            HStack(spacing: 8) {
+                Picker("", selection: $recordScreenIndex) {
+                    ForEach(Array(NSScreen.screens.enumerated()), id: \.offset) { index, screen in
+                        Text(L10n.groupScreenName(index, screen.localizedName)).tag(index)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 240)
+
+                Button(L10n.groupRecordNew) { recordNewGroup() }
+                    .buttonStyle(.borderedProminent)
+            }
+
+            if let msg = lastActionMessage {
+                Text(msg).font(.caption).foregroundColor(.secondary)
+            }
+
+            if groupsVM.groups.isEmpty {
+                Text(L10n.groupNoGroups)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 8)
+            } else {
+                ForEach(groupsVM.groups) { group in
+                    groupRow(group)
+                    if group.id != groupsVM.groups.last?.id { Divider() }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func groupRow(_ group: AppGroup) -> some View {
+        HStack(spacing: 10) {
+            GroupStackIcon(icons: icons(for: group), size: 30)
+
+            VStack(alignment: .leading, spacing: 2) {
+                GroupNameField(name: group.name) { groupsVM.rename(group, to: $0) }
+                Text("\(L10n.groupMembers(group.bundleIDs.count)) · \(screenLabel(group.screenIndex))")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            Button(L10n.groupUpdateRecording) { updateRecording(group) }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            Button(L10n.deleteGroup, role: .destructive) { groupsVM.delete(group) }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: Actions
+
+    private func recordNewGroup() {
+        let recording = windowService.recordScreen(screenIndex: recordScreenIndex)
+        guard !recording.bundleIDs.isEmpty else {
+            lastActionMessage = L10n.groupRecordEmpty
+            return
+        }
+        groupsVM.upsert(AppGroup(
+            name: defaultGroupName(),
+            bundleIDs: recording.bundleIDs,
+            screenIndex: recordScreenIndex,
+            frames: recording.frames
+        ))
+        lastActionMessage = L10n.groupRecordedApps(recording.bundleIDs.count)
+    }
+
+    private func updateRecording(_ group: AppGroup) {
+        let recording = windowService.recordScreen(screenIndex: group.screenIndex)
+        guard !recording.bundleIDs.isEmpty else {
+            lastActionMessage = L10n.groupRecordEmpty
+            return
+        }
+        var updated = group
+        updated.bundleIDs = recording.bundleIDs
+        updated.frames = recording.frames
+        groupsVM.upsert(updated)
+        lastActionMessage = L10n.groupRecordedApps(recording.bundleIDs.count)
+    }
+
+    private func defaultGroupName() -> String {
+        let base = L10n.groupDefaultName
+        let existing = Set(groupsVM.groups.map { $0.name })
+        if !existing.contains(base) { return base }
+        var n = 2
+        while existing.contains("\(base) \(n)") { n += 1 }
+        return "\(base) \(n)"
+    }
+
+    private func icons(for group: AppGroup) -> [NSImage] {
+        let byBundleID = Dictionary(
+            appConfigVM.apps.map { ($0.bundleID.lowercased(), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return group.bundleIDs.compactMap { byBundleID[$0.lowercased()]?.icon }
+    }
+
+    private func screenLabel(_ index: Int) -> String {
+        let screens = NSScreen.screens
+        let name = screens.indices.contains(index) ? screens[index].localizedName : "?"
+        return L10n.groupScreenName(index, name)
+    }
+}
+
+// MARK: - Group Name Field
+
+/// Inline group-name editor that commits only a non-empty, trimmed name, and
+/// only on Enter or focus loss — so clearing the field mid-edit can't persist an
+/// empty name (which the store's sanitize would drop, silently deleting the group).
+struct GroupNameField: View {
+    let name: String
+    let onCommit: (String) -> Void
+
+    @State private var text: String
+    @FocusState private var focused: Bool
+
+    init(name: String, onCommit: @escaping (String) -> Void) {
+        self.name = name
+        self.onCommit = onCommit
+        _text = State(initialValue: name)
+    }
+
+    var body: some View {
+        TextField(L10n.groupNamePlaceholder, text: $text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 13, weight: .semibold))
+            .focused($focused)
+            .onSubmit(commit)
+            .onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
+            .onChange(of: name) { _, newName in if !focused { text = newName } }
+    }
+
+    private func commit() {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { text = name } else { onCommit(trimmed) }
+    }
+}
+
+// MARK: - App Groups ViewModel
+
+@MainActor
+class AppGroupsViewModel: ObservableObject {
+    @Published private(set) var groups: [AppGroup] = []
+
+    private let settingsStore = UserDefaultsSwitcherSettingsStore()
+    private var currentSettings = SwitcherSettings()
+
+    init() { reload() }
+
+    func reload() {
+        currentSettings = settingsStore.load()
+        groups = currentSettings.appGroups
+    }
+
+    func upsert(_ group: AppGroup) {
+        if let index = currentSettings.appGroups.firstIndex(where: { $0.id == group.id }) {
+            currentSettings.appGroups[index] = group
+        } else {
+            currentSettings.appGroups.append(group)
+        }
+        save()
+    }
+
+    /// Rename with a non-empty trimmed name (GroupNameField enforces this)
+    func rename(_ group: AppGroup, to name: String) {
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let index = currentSettings.appGroups.firstIndex(where: { $0.id == group.id }) else { return }
+        currentSettings.appGroups[index].name = name
+        save()
+    }
+
+    func delete(_ group: AppGroup) {
+        currentSettings.appGroups.removeAll { $0.id == group.id }
+        save()
+    }
+
+    private func save() {
+        // Read-modify-write only the appGroups domain onto freshly persisted
+        // settings, so a concurrent pinned-apps edit isn't clobbered.
+        var persisted = settingsStore.load()
+        persisted.appGroups = currentSettings.appGroups
+        try? settingsStore.save(persisted)
+        reload()
+        NotificationCenter.default.post(name: .switcherSettingsDidChange, object: nil)
     }
 }
 

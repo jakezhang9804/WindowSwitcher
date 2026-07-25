@@ -38,7 +38,8 @@ public final class UserDefaultsSwitcherSettingsStore: SwitcherSettingsStoring {
             let decoded = try decoder.decode(SwitcherSettings.self, from: data)
             return SwitcherSettings(
                 allowedBundleIDs: decoded.allowedBundleIDs,
-                appBindings: AppBindingRules.normalizedBindings(decoded.appBindings)
+                appBindings: AppBindingRules.normalizedBindings(decoded.appBindings),
+                appGroups: AppGroupRules.sanitized(decoded.appGroups)
             )
         } catch {
             return SwitcherSettings()
@@ -66,7 +67,8 @@ public final class UserDefaultsSwitcherSettingsStore: SwitcherSettingsStoring {
 
         let sanitized = SwitcherSettings(
             allowedBundleIDs: settings.allowedBundleIDs,
-            appBindings: AppBindingRules.normalizedBindings(normalizedCandidates)
+            appBindings: AppBindingRules.normalizedBindings(normalizedCandidates),
+            appGroups: AppGroupRules.sanitized(settings.appGroups)
         )
 
         let data = try encoder.encode(sanitized)
