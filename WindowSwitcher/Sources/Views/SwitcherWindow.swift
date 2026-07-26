@@ -13,14 +13,11 @@ enum SwitcherLayout {
 
 /// Main switcher panel view.
 ///
-/// Interaction flow:
-/// 1. Panel opens with the hotkey, second item pre-selected (last used window)
-/// 2. Search bar is visible at the top but **inactive** by default (placeholder only)
-/// 3. While holding the modifier, each Tab press cycles to the next window
-/// 4. Releasing the modifier confirms the selection and switches to that window
-/// 5. Number keys 1-9 jump to the Nth item and confirm (when search is inactive)
-/// 6. Enter activates the search bar (when search is inactive) or confirms selection (when search is active)
-/// 7. Escape deactivates search (if active) or dismisses the panel
+/// Interaction:
+/// - Hold the modifier, Tab cycles the top-level list (apps in by-app mode).
+/// - Releasing the modifier confirms; number keys 1-9 jump + confirm.
+/// - In by-app grouping, → drills into the selected app's windows (a secondary
+///   detail panel, TabTab-style); ← / Esc backs out; ↑/↓ move within it.
 struct SwitcherWindow: View {
     @ObservedObject var viewModel: SwitcherViewModel
     var layout: SwitcherLayout = .list
@@ -51,65 +48,85 @@ struct SwitcherWindow: View {
     }
 
     // Semantic system colors — they adapt to the panel appearance automatically
-    // and render with vibrancy inside the NSVisualEffectView, matching the
-    // label hierarchy Apple's own HUD panels use.
+    // and render with vibrancy inside the NSVisualEffectView.
 
-    /// Secondary text color
-    private var secondaryText: Color {
-        .secondary
+    private var secondaryText: Color { .secondary }
+    private var tertiaryText: Color { Color(nsColor: .tertiaryLabelColor) }
+    private var subtleText: Color { Color(nsColor: .quaternaryLabelColor) }
+    private var fillBg: Color { Color.primary.opacity(0.08) }
+
+    // MARK: - List sizing
+
+    /// The vertical list shows at most this many rows; beyond it it scrolls.
+    /// Keep in sync with `AppDelegate.calculatePanelHeight`.
+    static let listMaxVisibleRows = 9
+    /// Row content (28pt icon) + vertical padding 7×2
+    static let listRowHeight: CGFloat = 42
+    static let listRowSpacing: CGFloat = 2
+
+    /// Height of a results list capped at `listMaxVisibleRows`.
+    static func listHeight(for count: Int) -> CGFloat {
+        let n = min(count, listMaxVisibleRows)
+        guard n > 0 else { return 0 }
+        return CGFloat(n) * listRowHeight + CGFloat(n - 1) * listRowSpacing
     }
 
-    /// Tertiary / muted text color
-    private var tertiaryText: Color {
-        Color(nsColor: .tertiaryLabelColor)
-    }
-
-    /// Very subtle text color (for branding, hints)
-    private var subtleText: Color {
-        Color(nsColor: .quaternaryLabelColor)
-    }
-
-    /// Neutral fill for the search bar, badges, and icon placeholders
-    private var fillBg: Color {
-        Color.primary.opacity(0.08)
+    /// Windows of the drilled-into app, as switcher items
+    private var secondaryItems: [SwitcherItem] {
+        viewModel.expandedWindows.map { .window($0) }
     }
 
     var body: some View {
         Group {
-            switch layout {
-            case .list: listBody
-            case .strip: stripBody
+            if viewModel.secondaryActive {
+                secondaryBody
+            } else {
+                switch layout {
+                case .list: listBody
+                case .strip: stripBody
+                }
             }
         }
-        // Handle Tab and Arrow keys via SwiftUI for key repeat support
+        // Tab cycles the top-level list (with key-repeat)
         .onKeyPress(.tab) {
             viewModel.selectNext()
             return .handled
         }
         .onKeyPress(.upArrow) {
-            viewModel.selectPrevious()
+            viewModel.moveUp()
             return .handled
         }
         .onKeyPress(.downArrow) {
-            viewModel.selectNext()
+            viewModel.moveDown()
             return .handled
         }
-        // Let the panel resize to match the filtered result count
-        .onChange(of: viewModel.displayItems.count) { _, newCount in
-            onItemCountChange(newCount)
+        .onKeyPress(.rightArrow) {
+            viewModel.enterSecondary()
+            return .handled
         }
-        // Watch for isSearchActive changes from ViewModel to focus TextField
+        .onKeyPress(.leftArrow) {
+            viewModel.exitSecondary()
+            return .handled
+        }
+        // Resize when the displayed count changes (top-level, search, or drill-in)
+        .onChange(of: viewModel.displayItems.count) { _, _ in
+            onItemCountChange(viewModel.displayedItems.count)
+        }
+        .onChange(of: viewModel.secondaryActive) { _, _ in
+            onItemCountChange(viewModel.displayedItems.count)
+        }
         .onChange(of: viewModel.isSearchActive) { _, isActive in
             if isActive {
-                // Focus the TextField after a brief delay to let SwiftUI render it
+                // Activate the app so the input method (IME / 中英文) engages —
+                // a non-activating key panel alone can't route IME.
+                NSApp.activate(ignoringOtherApps: true)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                     isTextFieldFocused = true
                 }
             } else {
                 isTextFieldFocused = false
             }
-            // The strip panel grows when the search bar appears
-            onItemCountChange(viewModel.displayItems.count)
+            onItemCountChange(viewModel.displayedItems.count)
         }
     }
 
@@ -117,10 +134,8 @@ struct SwitcherWindow: View {
 
     private var listBody: some View {
         VStack(spacing: 0) {
-            // Search bar — always visible at top
             searchBar
 
-            // Results list or empty state
             let items = viewModel.displayItems
             if items.isEmpty {
                 emptyState
@@ -128,17 +143,13 @@ struct SwitcherWindow: View {
                 SwitcherResultsList(
                     items: items,
                     selectedIndex: $viewModel.selectedIndex,
-                    searchText: viewModel.searchText,
-                    onSelect: { item in
-                        activateItem(item)
-                    },
-                    onHover: { index in
-                        hoverSelect(index)
-                    }
+                    onSelect: { activateItem($0) },
+                    onHover: { hoverSelect($0) }
                 )
+                // Cap at 9 rows; extra rows scroll inside this frame.
+                .frame(height: Self.listHeight(for: items.count))
             }
 
-            // Bottom bar
             bottomBar
         }
         .frame(width: 340)
@@ -166,9 +177,7 @@ struct SwitcherWindow: View {
                                 stripIcon(item: item, isSelected: index == viewModel.selectedIndex, index: index)
                                     .id(index)
                                     .onTapGesture { activateItem(item) }
-                                    .onHover { isHovered in
-                                        if isHovered { hoverSelect(index) }
-                                    }
+                                    .onHover { if $0 { hoverSelect(index) } }
                             }
                         }
                         .padding(.horizontal, 14)
@@ -180,14 +189,21 @@ struct SwitcherWindow: View {
                     }
                 }
 
-                // Selected item caption — needed because multiple windows of
-                // the same app share an icon (unlike the app-level native switcher)
-                Text(selectedCaption)
-                    .font(.system(size: 12))
-                    .foregroundColor(secondaryText)
-                    .lineLimit(1)
-                    .padding(.horizontal, 16)
-                    .frame(height: 16)
+                // Selected item caption + drill-in hint
+                HStack(spacing: 6) {
+                    Text(selectedCaption)
+                        .font(.system(size: 12))
+                        .foregroundColor(secondaryText)
+                        .lineLimit(1)
+                    if viewModel.expandedWindows.count >= 2 {
+                        Label(L10n.drillHint, systemImage: "arrow.right")
+                            .labelStyle(.titleAndIcon)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(tertiaryText)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .frame(height: 16)
             }
         }
         .padding(.vertical, 12)
@@ -195,9 +211,48 @@ struct SwitcherWindow: View {
         .background(Color.clear)
     }
 
+    // MARK: - Secondary (per-app windows) drill-down
+
+    private var secondaryBody: some View {
+        VStack(spacing: 0) {
+            // Back header: ‹ App name · N windows
+            HStack(spacing: 8) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(secondaryText)
+                Text(viewModel.selectedItem?.displayName ?? "")
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                Spacer()
+                Text(L10n.windowCountText(secondaryItems.count))
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundColor(tertiaryText)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 40)
+            .contentShape(Rectangle())
+            .onTapGesture { viewModel.exitSecondary() }
+
+            SwitcherResultsList(
+                items: secondaryItems,
+                selectedIndex: $viewModel.secondaryIndex,
+                onSelect: { item in
+                    if case .window(let w) = item { activateWindow(w) }
+                },
+                onHover: { viewModel.secondaryIndex = $0 }
+            )
+            .frame(height: Self.listHeight(for: secondaryItems.count))
+        }
+        .padding(.vertical, 6)
+        .frame(width: 340)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
     private func stripIcon(item: SwitcherItem, isSelected: Bool, index: Int) -> some View {
         ZStack(alignment: .topTrailing) {
-            ZStack {
+            ZStack(alignment: .bottom) {
                 RoundedRectangle(cornerRadius: 16)
                     .fill(isSelected ? Color.primary.opacity(0.18) : Color.clear)
 
@@ -219,6 +274,17 @@ struct SwitcherWindow: View {
                                 .foregroundColor(tertiaryText)
                         )
                 }
+
+                // Multi-window apps show a small stacked-count pill
+                if item.windows.count >= 2 {
+                    Text("\(item.windows.count)")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundColor(.primary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(fillBg))
+                        .offset(y: 2)
+                }
             }
 
             // Quick-select number badge (keys 1-9)
@@ -227,9 +293,7 @@ struct SwitcherWindow: View {
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
                     .foregroundColor(isSelected ? .primary : tertiaryText)
                     .frame(width: 16, height: 16)
-                    .background(
-                        Circle().fill(isSelected ? Color.primary.opacity(0.2) : fillBg)
-                    )
+                    .background(Circle().fill(isSelected ? Color.primary.opacity(0.2) : fillBg))
                     .padding(4)
             }
         }
@@ -265,7 +329,6 @@ struct SwitcherWindow: View {
                 .foregroundColor(secondaryText)
 
             if viewModel.isSearchActive {
-                // Active mode: show real TextField
                 ZStack(alignment: .leading) {
                     if viewModel.searchText.isEmpty {
                         Text(L10n.searchPlaceholder)
@@ -281,9 +344,7 @@ struct SwitcherWindow: View {
                 }
 
                 if !viewModel.searchText.isEmpty {
-                    Button(action: {
-                        viewModel.searchText = ""
-                    }) {
+                    Button(action: { viewModel.searchText = "" }) {
                         Image(systemName: "xmark.circle.fill")
                             .font(.system(size: 12))
                             .foregroundColor(tertiaryText)
@@ -292,11 +353,9 @@ struct SwitcherWindow: View {
                     .transition(.opacity)
                 }
             } else {
-                // Inactive mode: show placeholder text only (no TextField)
                 Text(L10n.searchInactivePlaceholder)
                     .font(.system(size: 13))
                     .foregroundColor(tertiaryText)
-
                 Spacer()
             }
         }
@@ -309,9 +368,7 @@ struct SwitcherWindow: View {
         .padding(.bottom, 4)
         .contentShape(Rectangle())
         .onTapGesture {
-            if !viewModel.isSearchActive {
-                viewModel.isSearchActive = true
-            }
+            if !viewModel.isSearchActive { viewModel.isSearchActive = true }
         }
     }
 
@@ -336,7 +393,6 @@ struct SwitcherWindow: View {
 
     private var bottomBar: some View {
         ZStack {
-            // Center: Powered by Manus (absolutely centered)
             HStack(spacing: 3) {
                 Text(L10n.isChinese ? "基于" : "Powered by")
                     .font(.system(size: 10))
@@ -346,9 +402,7 @@ struct SwitcherWindow: View {
                     .foregroundStyle(tertiaryText)
             }
 
-            // Left & Right overlay
             HStack {
-                // Left: window count (number only)
                 let items = viewModel.displayItems
                 if !items.isEmpty {
                     Text("\(viewModel.totalCount)")
@@ -362,7 +416,6 @@ struct SwitcherWindow: View {
 
                 Spacer()
 
-                // Right: settings button
                 Button(action: { onOpenSettings() }) {
                     Image(systemName: "gearshape")
                         .font(.system(size: 12))
@@ -382,6 +435,11 @@ struct SwitcherWindow: View {
         viewModel.activate(item)
         onDismiss()
     }
+
+    private func activateWindow(_ window: WindowInfo) {
+        viewModel.activate(window: window)
+        onDismiss()
+    }
 }
 
 // MARK: - Switcher Results List (supports mixed SwitcherItem)
@@ -389,21 +447,12 @@ struct SwitcherWindow: View {
 struct SwitcherResultsList: View {
     let items: [SwitcherItem]
     @Binding var selectedIndex: Int
-    let searchText: String
     let onSelect: (SwitcherItem) -> Void
     let onHover: ((Int) -> Void)?
 
-    /// Selection uses the user's accent color with white content, the same
-    /// treatment as Spotlight results and native menu highlights.
-    private var selectedBg: Color {
-        Color(nsColor: .controlAccentColor)
-    }
-    private var tertiaryText: Color {
-        Color(nsColor: .tertiaryLabelColor)
-    }
-    private var fillBg: Color {
-        Color.primary.opacity(0.08)
-    }
+    private var selectedBg: Color { Color(nsColor: .controlAccentColor) }
+    private var tertiaryText: Color { Color(nsColor: .tertiaryLabelColor) }
+    private var fillBg: Color { Color.primary.opacity(0.08) }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -413,9 +462,7 @@ struct SwitcherResultsList: View {
                         resultItem(item: item, isSelected: index == selectedIndex, index: index)
                             .id(index)
                             .onTapGesture { onSelect(item) }
-                            .onHover { isHovered in
-                                if isHovered { onHover?(index) }
-                            }
+                            .onHover { if $0 { onHover?(index) } }
                     }
                 }
                 .padding(.horizontal, 6)
@@ -430,7 +477,6 @@ struct SwitcherResultsList: View {
 
     private func resultItem(item: SwitcherItem, isSelected: Bool, index: Int) -> some View {
         HStack(spacing: 10) {
-            // App icon (composite stack for groups)
             if let groupIcons = item.groupIcons {
                 GroupStackIcon(icons: groupIcons, size: 28)
             } else if let icon = item.icon {
@@ -450,7 +496,6 @@ struct SwitcherResultsList: View {
                     )
             }
 
-            // Text area
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.displayName)
                     .font(.system(size: 13, weight: .medium))
@@ -466,6 +511,13 @@ struct SwitcherResultsList: View {
             }
 
             Spacer(minLength: 4)
+
+            // Drill-in chevron for multi-window apps
+            if item.windows.count >= 2 {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(isSelected ? .white.opacity(0.8) : tertiaryText)
+            }
 
             // Badge: keyboard shortcut number for first 9 items
             if index < 9 {
@@ -507,7 +559,6 @@ struct GroupStackIcon: View {
     var body: some View {
         let shown = Array(icons.prefix(3))
         let iconSize = size * (shown.count == 1 ? 0.62 : 0.52)
-        // Cascade from top-leading to bottom-trailing across the backdrop
         let span = size * 0.32
         let step = shown.count > 1 ? span / CGFloat(shown.count - 1) : 0
         let start = -span / 2

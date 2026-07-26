@@ -29,108 +29,80 @@ private let kSLPSUserGenerated: UInt32 = 0x200
 
 final class WindowService {
 
-    /// Get all switchable windows, optionally filtered by allowed bundle IDs.
-    /// When `allowedBundleIDs` is empty, all windows are returned (no filter).
-    /// Includes windows on other Spaces and minimized ones (.optionAll) —
-    /// .optionOnScreenOnly only sees the current Space, which made windows
-    /// living on other desktops unreachable. Current-Space windows keep their
-    /// z-order at the front; off-Space/minimized ones follow.
-    func getAllWindows(allowedBundleIDs: Set<String> = []) -> [WindowInfo] {
-        let options: CGWindowListOption = [.optionAll, .excludeDesktopElements]
+    /// Minimum fraction of a window's own area that must lie on a screen for it
+    /// to count as "shown" — the switcher only lists apps whose UI is actually
+    /// displayed (>90% on-screen), excluding minimized, other-Space, or windows
+    /// dragged mostly off the edge. Occlusion by other apps does NOT hide a
+    /// window: the whole point of a switcher is to reach the apps behind.
+    static let minVisibleFraction = 0.9
+
+    /// Get all switchable windows: layer-0, on the current Space (not minimized
+    /// / not on another Space), a real title, big enough, and ≥90% of the window
+    /// on some screen. Returns front-to-back z-order (frontmost first).
+    func getAllWindows() -> [WindowInfo] {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let windowList = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return []
         }
 
-        let runningApps = NSWorkspace.shared.runningApplications
-        // processIdentifier can be -1 for apps without a PID, so keys may collide
         let appsByPID = Dictionary(
-            runningApps.map { ($0.processIdentifier, $0) },
+            NSWorkspace.shared.runningApplications.map { ($0.processIdentifier, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-
         let currentBundleID = Bundle.main.bundleIdentifier
+        // Screen rects in CGWindow's top-left coordinate space
+        let screenRects = NSScreen.screens.map { axRect(fromAppKit: $0.frame) }
 
-        // Count windows per app for windowCount field
-        var windowCountByPID: [pid_t: Int] = [:]
-        for windowDict in windowList {
-            guard let ownerPID = windowDict[kCGWindowOwnerPID as String] as? pid_t,
-                  let windowName = windowDict[kCGWindowName as String] as? String,
-                  !windowName.isEmpty,
-                  let layer = windowDict[kCGWindowLayer as String] as? Int, layer == 0 else {
-                continue
-            }
-            windowCountByPID[ownerPID, default: 0] += 1
-        }
-
-        var onScreenResult: [WindowInfo] = []
-        var offScreenResult: [WindowInfo] = []
+        var visible: [WindowInfo] = []
 
         for windowDict in windowList {
-            guard let ownerPID = windowDict[kCGWindowOwnerPID as String] as? pid_t else {
+            guard let layer = windowDict[kCGWindowLayer as String] as? Int, layer == 0,
+                  let ownerPID = windowDict[kCGWindowOwnerPID as String] as? pid_t,
+                  let bounds = windowDict[kCGWindowBounds as String] as? [String: CGFloat] else {
                 continue
             }
-
             let app = appsByPID[ownerPID]
+            if app?.bundleIdentifier == currentBundleID { continue }
 
-            // Skip our own windows
-            if let bundleID = app?.bundleIdentifier, bundleID == currentBundleID {
+            let rect = CGRect(
+                x: bounds["X"] ?? 0, y: bounds["Y"] ?? 0,
+                width: bounds["Width"] ?? 0, height: bounds["Height"] ?? 0
+            )
+
+            guard rect.width >= 50, rect.height >= 50,
+                  let windowName = windowDict[kCGWindowName as String] as? String, !windowName.isEmpty,
+                  let windowID = windowDict[kCGWindowNumber as String] as? CGWindowID,
+                  let ownerName = windowDict[kCGWindowOwnerName as String] as? String,
+                  screenRects.contains(where: { areaFraction(of: rect, within: $0) >= Self.minVisibleFraction }) else {
                 continue
             }
 
-            // Filter by allowed bundle IDs (when set is non-empty)
-            if !allowedBundleIDs.isEmpty {
-                guard let bundleID = app?.bundleIdentifier,
-                      allowedBundleIDs.contains(bundleID) else {
-                    continue
-                }
-            }
-
-            guard let windowName = windowDict[kCGWindowName as String] as? String,
-                  !windowName.isEmpty else {
-                continue
-            }
-
-            guard let windowID = windowDict[kCGWindowNumber as String] as? CGWindowID,
-                  let ownerName = windowDict[kCGWindowOwnerName as String] as? String else {
-                continue
-            }
-
-            // Skip system windows (layer != 0)
-            let layer = windowDict[kCGWindowLayer as String] as? Int ?? 0
-            if layer != 0 { continue }
-
-            // Skip very small windows
-            if let bounds = windowDict[kCGWindowBounds as String] as? [String: CGFloat] {
-                let width = bounds["Width"] ?? 0
-                let height = bounds["Height"] ?? 0
-                if width < 50 || height < 50 { continue }
-            }
-
-            let appIcon = app?.icon
-            let appPath = app?.bundleURL?.path
-            let count = windowCountByPID[ownerPID] ?? 1
-            let bundleIdentifier = app?.bundleIdentifier
-
-            let windowInfo = WindowInfo(
+            visible.append(WindowInfo(
                 id: windowID,
                 title: windowName,
                 appName: ownerName,
                 appPID: ownerPID,
-                appBundleID: bundleIdentifier,
-                appIcon: appIcon,
-                appPath: appPath,
-                windowCount: count
-            )
-
-            let isOnScreen = (windowDict[kCGWindowIsOnscreen as String] as? Bool) ?? false
-            if isOnScreen {
-                onScreenResult.append(windowInfo)
-            } else {
-                offScreenResult.append(windowInfo)
-            }
+                appBundleID: app?.bundleIdentifier,
+                appIcon: app?.icon,
+                appPath: app?.bundleURL?.path,
+                windowCount: 1
+            ))
         }
 
-        return onScreenResult + offScreenResult
+        // Fill in per-app window counts (used by the by-app grouping subtitle)
+        var countByPID: [pid_t: Int] = [:]
+        for w in visible { countByPID[w.appPID, default: 0] += 1 }
+        for i in visible.indices { visible[i].windowCount = countByPID[visible[i].appPID] ?? 1 }
+
+        return visible
+    }
+
+    /// Fraction of `rect`'s area that lies inside `container`.
+    private func areaFraction(of rect: CGRect, within container: CGRect) -> Double {
+        guard rect.width > 0, rect.height > 0 else { return 0 }
+        let inter = rect.intersection(container)
+        guard !inter.isNull else { return 0 }
+        return (inter.width * inter.height) / (rect.width * rect.height)
     }
 
     /// Activate a specific window. AX raise handles current-Space and
@@ -151,10 +123,24 @@ final class WindowService {
         }
 
         if let app = NSRunningApplication(processIdentifier: window.appPID) {
-            let activated = app.activate()
-            NSLog("[WS] activateWindow: \(window.appName) pid=\(window.appPID) activate=\(activated) raised=\(raised)")
+            forceActivate(app, label: "\(window.appName) (raised=\(raised))")
         } else {
             NSLog("[WS] activateWindow: no NSRunningApplication for pid=\(window.appPID) (\(window.appName))")
+        }
+    }
+
+    /// `NSRunningApplication.activate()` can return false (dropped) when invoked
+    /// from an accessory app while the window server is mid-transition — retry
+    /// once shortly after so an intermittent drop doesn't read as "didn't switch".
+    private func forceActivate(_ app: NSRunningApplication, label: String) {
+        if app.activate() {
+            NSLog("[WS] activate \(label) ok")
+            return
+        }
+        NSLog("[WS] activate \(label) returned false — retrying once")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+            let ok = app.activate()
+            NSLog("[WS] activate \(label) retry=\(ok)")
         }
     }
 
@@ -201,12 +187,10 @@ final class WindowService {
             return
         }
 
-        let activated = app.activate()
-        NSLog("[WS] activateApp: \(bundleID) pid=\(app.processIdentifier) activate=\(activated) hidden=\(app.isHidden)")
-
         if app.isHidden {
             app.unhide()
         }
+        forceActivate(app, label: "\(bundleID) (hidden=\(app.isHidden))")
 
         // activate() alone never restores a minimized window — the app becomes
         // active but nothing appears on screen, which reads as a failed switch
@@ -351,19 +335,20 @@ final class WindowService {
             guard let layer = dict[kCGWindowLayer as String] as? Int, layer == 0,
                   let name = dict[kCGWindowName as String] as? String, !name.isEmpty,
                   let pid = dict[kCGWindowOwnerPID as String] as? pid_t,
+                  let bundleID = appsByPID[pid]?.bundleIdentifier,
+                  bundleID.lowercased() != currentBundleID,
                   let boundsDict = dict[kCGWindowBounds as String] as? [String: CGFloat] else {
-                continue
-            }
-            guard let bundleID = appsByPID[pid]?.bundleIdentifier,
-                  bundleID.lowercased() != currentBundleID else {
                 continue
             }
             let rect = CGRect(
                 x: boundsDict["X"] ?? 0, y: boundsDict["Y"] ?? 0,
                 width: boundsDict["Width"] ?? 0, height: boundsDict["Height"] ?? 0
             )
+
+            // Only apps with a large window that lives (>90% of its area) on the
+            // target screen — the apps genuinely arranged on that screen.
             guard rect.width >= 50, rect.height >= 50,
-                  screenRect.contains(CGPoint(x: rect.midX, y: rect.midY)) else {
+                  areaFraction(of: rect, within: screenRect) >= Self.minVisibleFraction else {
                 continue
             }
 

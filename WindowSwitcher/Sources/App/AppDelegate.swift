@@ -20,12 +20,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The SwiftUI view model — kept here so HotkeyService can drive Tab cycling
     private var switcherViewModel: SwitcherViewModel?
 
-    /// Event monitors for Option+Key app bindings
-    private var localKeyMonitor: Any?
-    private var globalKeyMonitor: Any?
-
     /// The hosting view for the current switcher panel content
     private var currentHostingView: NSHostingView<SwitcherWindow>?
+
+    /// True while a confirm is in flight. Guards against a double-confirm when a
+    /// number-key press and a modifier-release land almost simultaneously (each
+    /// would otherwise fire its own activate/hide, racing focus and possibly
+    /// activating different items), and lets onResignKey skip its redundant hide.
+    private var isConfirming = false
 
     // MARK: - Lifecycle
 
@@ -40,18 +42,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupStatusBarItem()
         setupGlobalHotkey()
-        setupAppBindingMonitor()
 
         // Primary input path: CGEventTap (enables Cmd+Tab takeover and
         // reliable modifier-release detection). Requires accessibility trust;
         // falls back to the Carbon hotkey + NSEvent monitors when unavailable.
         hotkeyService.startEventTap()
-
-        // Warm the installed-app catalog so pinned apps without visible
-        // windows appear in the very first panel open after launch
-        MainActor.assumeIsolated {
-            SwitcherViewModel.warmInstalledAppsCache()
-        }
 
         // Check accessibility permission. Without it the global keyDown
         // monitors (number quick-select, Enter/Escape, Option+Key bindings)
@@ -193,6 +188,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // Arrow keys — list navigation + per-app window drill-down (byApp grouping)
+        hotkeyService.onUpArrow { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.switcherViewModel?.moveUp() } }
+        }
+        hotkeyService.onDownArrow { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.switcherViewModel?.moveDown() } }
+        }
+        hotkeyService.onRightArrow { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.switcherViewModel?.enterSecondary() } }
+        }
+        hotkeyService.onLeftArrow { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.switcherViewModel?.exitSecondary() } }
+        }
+
         // Provide search active state to HotkeyService via ViewModel
         hotkeyService.isSearchActiveProvider = { [weak self] in
             return MainActor.assumeIsolated {
@@ -221,19 +230,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Number key 1-9 → jump to Nth item and confirm
+        // Number key 1-9 → jump to Nth item in the CURRENT list and confirm
         hotkeyService.onNumberPress { [weak self] number in
             NSLog("[WS] Number \(number) — jumping to item")
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 let index = number - 1 // 1-based to 0-based
                 MainActor.assumeIsolated {
-                    let items = self.switcherViewModel?.displayItems ?? []
+                    let items = self.switcherViewModel?.displayedItems ?? []
                     NSLog("[WS] Number \(number): index=\(index), totalItems=\(items.count)")
                     if index >= 0 && index < items.count {
-                        let item = items[index]
-                        NSLog("[WS] Number \(number): selecting item=\(item.displayName), id=\(item.id), isWindow=\(item.isWindow)")
-                        self.switcherViewModel?.selectedIndex = index
+                        NSLog("[WS] Number \(number): selecting item=\(items[index].displayName)")
+                        self.switcherViewModel?.selectDisplayed(index)
                         self.confirmAndHideSwitcher()
                     } else {
                         NSLog("[WS] Number \(number): index \(index) out of range (\(items.count) items)")
@@ -253,71 +261,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSLog("[WS] Global hotkey registered")
     }
 
-    // MARK: - App Binding Monitor (Option + Key)
-
-    private func setupAppBindingMonitor() {
-        // Remove existing monitors
-        if let monitor = globalKeyMonitor {
-            NSEvent.removeMonitor(monitor)
-            globalKeyMonitor = nil
-        }
-        if let monitor = localKeyMonitor {
-            NSEvent.removeMonitor(monitor)
-            localKeyMonitor = nil
-        }
-
-        // Use a global monitor for Option+Key combinations
-        globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            self?.handleAppBindingKeyEvent(event)
-        }
-
-        // Also add a local monitor for when our app is focused
-        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            if self?.handleAppBindingKeyEvent(event) == true {
-                return nil // Consume the event
-            }
-            return event
-        }
-
-        NSLog("[WS] App binding monitor set up")
-    }
-
-    /// Handle Option+Key events for direct app switching.
-    /// Returns true if the event was handled.
-    @discardableResult
-    private func handleAppBindingKeyEvent(_ event: NSEvent) -> Bool {
-        // When the switcher panel is active, let HotkeyService handle all keys
-        if hotkeyService.isSwitcherActive { return false }
-
-        // Only respond to Option (without Command/Control/Shift)
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        guard flags == .option else { return false }
-
-        guard let characters = event.charactersIgnoringModifiers,
-              !characters.isEmpty else { return false }
-
-        let key = characters.uppercased()
-
-        // Don't handle Tab here — that's for the switcher
-        if event.keyCode == 48 { return false } // kVK_Tab = 48
-
-        let settings = settingsStore.load()
-        guard let bundleID = settings.bundleID(for: key) else { return false }
-
-        NSLog("[WS] App binding triggered: Option+\(key) -> \(bundleID)")
-
-        DispatchQueue.main.async { [weak self] in
-            self?.windowService.activateApp(bundleID: bundleID)
-        }
-
-        return true
-    }
-
     @objc private func settingsDidChange() {
-        NSLog("[WS] Settings changed, refreshing bindings")
+        NSLog("[WS] Settings changed")
         let settings = settingsStore.load()
-        NSLog("[WS] Pinned apps: \(settings.allowedBundleIDs)")
-        NSLog("[WS] App bindings: \(settings.appBindings.map { "\($0.triggerKey)->\($0.bundleID)" })")
+        NSLog("[WS] App groups: \(settings.appGroups.map { $0.name })")
     }
 
     // MARK: - Switcher Panel
@@ -446,40 +393,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let itemHeight: CGFloat = 42
         let itemSpacing: CGFloat = 2
 
-        // List vertical padding: 4px top + 4px bottom = 8px
-        let listPadding: CGFloat = 8
-
         // Bottom bar: padding 8*2 + content ~16px = 32px
         let bottomBarHeight: CGFloat = 32
 
+        // Cap the list at 9 visible rows — matching SwitcherWindow's
+        // `listContentHeight`; extra rows scroll inside the fixed panel.
+        let visibleCount = min(itemCount, SwitcherWindow.listMaxVisibleRows)
         let itemsTotal: CGFloat
         if itemCount > 0 {
-            itemsTotal = CGFloat(itemCount) * itemHeight + CGFloat(itemCount - 1) * itemSpacing
+            itemsTotal = CGFloat(visibleCount) * itemHeight + CGFloat(visibleCount - 1) * itemSpacing
         } else {
             itemsTotal = 140  // empty state: minHeight 80 + vertical padding 30*2
         }
 
-        let totalHeight = searchBarHeight + listPadding + itemsTotal + bottomBarHeight
+        let totalHeight = searchBarHeight + itemsTotal + bottomBarHeight
 
         // Clamp to screen bounds
         let maxHeight: CGFloat = min(NSScreen.main?.visibleFrame.height ?? 700, 700)
         return min(max(totalHeight, 150), maxHeight)
     }
 
-    /// Resize the visible panel when the result count changes (e.g. while searching),
-    /// keeping the top edge fixed so the search bar doesn't jump
+    /// Panel height for the drilled-in per-app window list: back header (40) +
+    /// capped rows + vertical padding (12), matching SwitcherWindow.secondaryBody.
+    private func calculateSecondaryHeight(itemCount: Int) -> CGFloat {
+        let total = 40 + SwitcherWindow.listHeight(for: itemCount) + 12
+        let maxHeight = min(NSScreen.main?.visibleFrame.height ?? 700, 700)
+        return min(max(total, 120), maxHeight)
+    }
+
+    /// Resize the visible panel when the displayed list changes (search, drill-in,
+    /// item count), keeping the list top edge fixed so it doesn't jump.
     private func resizeSwitcherPanel(itemCount: Int) {
         guard let panel = switcherPanel, panel.isVisible else { return }
 
-        if switcherLayout == .strip {
-            let searchActive = MainActor.assumeIsolated {
-                switcherViewModel?.isSearchActive ?? false
-            }
-            positionStripPanel(panel, itemCount: itemCount, searchActive: searchActive)
+        let (secondary, searchActive, count) = MainActor.assumeIsolated {
+            (switcherViewModel?.secondaryActive ?? false,
+             switcherViewModel?.isSearchActive ?? false,
+             switcherViewModel?.displayedItems.count ?? itemCount)
+        }
+
+        // Drilled into an app's windows → a 340-wide list, positioned like the
+        // list layout (left/right edge, or centered when the layout is center).
+        if secondary {
+            positionPanel(panel, height: calculateSecondaryHeight(itemCount: count))
             return
         }
 
-        let height = calculatePanelHeight(itemCount: itemCount)
+        if switcherLayout == .strip {
+            positionStripPanel(panel, itemCount: count, searchActive: searchActive)
+            return
+        }
+
+        let height = calculatePanelHeight(itemCount: count)
         var frame = panel.frame
         guard frame.height != height else { return }
         frame.origin.y = frame.maxY - height
@@ -498,21 +463,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.setFrame(frame, display: true)
     }
 
-    /// Confirm the current selection and hide the switcher
+    /// Confirm the current selection and hide the switcher.
+    ///
+    /// Order matters: the panel is a key window, so we relinquish it FIRST
+    /// (order out + tear down), THEN activate the target. Activating before the
+    /// panel gives up focus made the window server race the panel's order-out
+    /// and sometimes hand focus back to the previously-frontmost app — an
+    /// intermittent "didn't switch". Single-shot via `isConfirming` so a
+    /// near-simultaneous number-key + modifier-release can't double-fire.
     private func confirmAndHideSwitcher() {
-        // Activate the currently selected item
         MainActor.assumeIsolated {
+            guard !isConfirming else {
+                NSLog("[WS] Confirm ignored — already confirming")
+                return
+            }
+            isConfirming = true
+
             if let item = switcherViewModel?.selectedItem {
-                NSLog("[WS] Confirming: activating item=\(item.displayName), id=\(item.id), isWindow=\(item.isWindow)")
+                NSLog("[WS] Confirming: activating item=\(item.displayName), secondary=\(switcherViewModel?.secondaryActive ?? false)")
             } else {
                 NSLog("[WS] Confirming: no selected item!")
             }
-            switcherViewModel?.activateSelectedItem()
-        }
 
-        // Small delay to let the activation happen before hiding
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            self?.hideSwitcher()
+            // 1) Relinquish the panel's key focus before activating the target
+            switcherPanel?.orderOut(nil)
+
+            // 2) Activate the resolved target (secondary window wins if drilled in)
+            switcherViewModel?.activateResolvedSelection()
+
+            // 3) Tear down state
+            switcherViewModel = nil
+            currentHostingView = nil
+            hotkeyService.switcherDidHide()
+            isConfirming = false
+            NSLog("[WS] Switcher hidden (after confirm)")
         }
     }
 
@@ -546,12 +530,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.becomesKeyOnlyIfNeeded = false  // Allow becoming key immediately
 
         // When the panel loses focus (user clicked elsewhere), close it.
-        // hideSwitcher is idempotent, so the resign triggered by our own
-        // orderOut/confirm flow is harmless.
+        // During a confirm we order the panel out ourselves and activate the
+        // target — skip the redundant hide so it doesn't churn focus mid-switch.
         panel.onResignKey = { [weak self] in
+            guard let self = self else { return }
+            if self.isConfirming { return }
             NSLog("[WS] Panel lost focus — dismissing")
             DispatchQueue.main.async {
-                self?.hideSwitcher()
+                self.hideSwitcher()
             }
         }
 
@@ -706,14 +692,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quitApp() {
         NSLog("[WS] Quitting...")
-
-        if let monitor = globalKeyMonitor {
-            NSEvent.removeMonitor(monitor)
-        }
-        if let monitor = localKeyMonitor {
-            NSEvent.removeMonitor(monitor)
-        }
-
         NSApp.terminate(nil)
     }
 }

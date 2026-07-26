@@ -92,7 +92,8 @@ final class AppGroupTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
 
-        // Settings JSON written by a version that predates appGroups
+        // Settings JSON written by a version that predates appGroups (and that
+        // still carried the now-removed allowedBundleIDs / appBindings keys)
         let legacyJSON = """
         {"allowedBundleIDs":["com.test.a"],"appBindings":[{"bundleID":"com.test.a","triggerKey":"A"}]}
         """
@@ -101,8 +102,6 @@ final class AppGroupTests: XCTestCase {
         let store = UserDefaultsSwitcherSettingsStore(defaults: defaults)
         let output = store.load()
 
-        XCTAssertEqual(output.allowedBundleIDs, ["com.test.a"])
-        XCTAssertEqual(output.appBindings.count, 1)
         XCTAssertEqual(output.appGroups, [])
 
         defaults.removePersistentDomain(forName: suiteName)

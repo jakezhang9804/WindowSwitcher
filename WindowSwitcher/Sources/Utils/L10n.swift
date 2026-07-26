@@ -22,6 +22,7 @@ enum L10n {
     static let noResults = isChinese ? "没有找到匹配的窗口" : "No matching windows found"
     static let noResultsHint = isChinese ? "尝试其他搜索词" : "Try a different search term"
     static let noWindows = isChinese ? "没有打开的窗口" : "No open windows"
+    static let drillHint = isChinese ? "查看窗口" : "Windows"
 
     // MARK: - App Groups
 
@@ -99,14 +100,15 @@ enum L10n {
         isChinese ? "检测到 \(count) 个屏幕" : "\(count) screen\(count == 1 ? "" : "s") detected"
     }
 
-    // MARK: - Settings: Pinned Apps
+    // MARK: - Settings: Switcher List Grouping
 
-    static let pinnedAppsTitle = isChinese ? "固定应用" : "Pinned Apps"
-    static let pinnedAppsDescription = isChinese
-        ? "选择要固定的应用。切换器将只在固定的应用之间循环。可以为每个应用分配触发键（A-Z, 0-9），通过 Option + 键快速切换到指定应用。"
-        : "Select apps to pin. The switcher will only cycle through pinned apps. Optionally assign a trigger key (A-Z, 0-9) to quickly switch to a specific app via Option + Key."
-    static let searchAppsPlaceholder = isChinese ? "搜索已安装的应用…" : "Search installed apps..."
-    static let noAppsFound = isChinese ? "未找到应用" : "No apps found"
+    static let switcherListTitle = isChinese ? "切换列表" : "Switcher List"
+    static let groupingModeTitle = isChinese ? "分组方式" : "Grouping"
+    static let groupingModeFlat = isChinese ? "按窗口（平铺）" : "By window (flat)"
+    static let groupingModeByApp = isChinese ? "按应用" : "By app"
+    static let groupingModeDescription = isChinese
+        ? "「按窗口」每个窗口一行；「按应用」每个应用一行，选中后按 → 展开该应用的窗口。"
+        : "\"By window\" lists every window; \"By app\" shows one row per app — press → to expand that app's windows."
 
     // MARK: - Settings: Hotkeys
 

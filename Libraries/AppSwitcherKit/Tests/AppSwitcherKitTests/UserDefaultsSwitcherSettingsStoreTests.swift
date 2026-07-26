@@ -9,43 +9,34 @@ final class UserDefaultsSwitcherSettingsStoreTests: XCTestCase {
 
         let store = UserDefaultsSwitcherSettingsStore(defaults: defaults)
         let input = SwitcherSettings(
-            allowedBundleIDs: ["com.test.a", "com.test.b"],
-            appBindings: [
-                AppBinding(bundleID: "com.test.a", triggerKey: "a"),
-                AppBinding(bundleID: "com.test.b", triggerKey: "9")
+            appGroups: [
+                AppGroup(name: "Work", bundleIDs: ["com.test.a", "com.test.b"], screenIndex: 0)
             ]
         )
 
         try store.save(input)
         let output = store.load()
 
-        XCTAssertEqual(output.allowedBundleIDs, ["com.test.a", "com.test.b"])
-        XCTAssertEqual(
-            output.appBindings,
-            [
-                AppBinding(bundleID: "com.test.a", triggerKey: "A"),
-                AppBinding(bundleID: "com.test.b", triggerKey: "9")
-            ]
-        )
+        XCTAssertEqual(output.appGroups.map(\.name), ["Work"])
+        XCTAssertEqual(output.appGroups.first?.bundleIDs, ["com.test.a", "com.test.b"])
 
         defaults.removePersistentDomain(forName: suiteName)
     }
 
-    func testSaveThrowsWhenBindingsConflict() {
+    func testLoadIgnoresLegacyKeys() throws {
         let suiteName = "AppSwitcherKitTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
 
-        let store = UserDefaultsSwitcherSettingsStore(defaults: defaults)
-        let conflicting = SwitcherSettings(
-            allowedBundleIDs: [],
-            appBindings: [
-                AppBinding(bundleID: "com.test.a", triggerKey: "k"),
-                AppBinding(bundleID: "com.test.b", triggerKey: "K")
-            ]
-        )
+        // Settings persisted by an older version carried allowedBundleIDs /
+        // appBindings — those keys must decode without error and be dropped.
+        let legacy = """
+        {"allowedBundleIDs":["com.test.a"],"appBindings":[{"bundleID":"com.test.a","triggerKey":"A"}],"appGroups":[]}
+        """
+        defaults.set(Data(legacy.utf8), forKey: UserDefaultsSwitcherSettingsStore.defaultStorageKey)
 
-        XCTAssertThrowsError(try store.save(conflicting))
+        let output = UserDefaultsSwitcherSettingsStore(defaults: defaults).load()
+        XCTAssertTrue(output.appGroups.isEmpty)
 
         defaults.removePersistentDomain(forName: suiteName)
     }

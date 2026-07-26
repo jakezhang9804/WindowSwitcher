@@ -25,6 +25,13 @@ final class HotkeyService {
     private var numberHandler: ((Int) -> Void)?
     private var escapeHandler: (() -> Void)?
 
+    /// Arrow-key navigation (drives per-app drill-down in by-app grouping).
+    /// Handled here because the tap swallows arrows while the trigger is held.
+    private var upArrowHandler: (() -> Void)?
+    private var downArrowHandler: (() -> Void)?
+    private var leftArrowHandler: (() -> Void)?
+    private var rightArrowHandler: (() -> Void)?
+
     /// Called when Enter is pressed and search is not active — should activate search
     private var activateSearchHandler: (() -> Void)?
 
@@ -162,6 +169,11 @@ final class HotkeyService {
     func onEscape(_ handler: @escaping () -> Void) {
         self.escapeHandler = handler
     }
+
+    func onUpArrow(_ handler: @escaping () -> Void) { self.upArrowHandler = handler }
+    func onDownArrow(_ handler: @escaping () -> Void) { self.downArrowHandler = handler }
+    func onLeftArrow(_ handler: @escaping () -> Void) { self.leftArrowHandler = handler }
+    func onRightArrow(_ handler: @escaping () -> Void) { self.rightArrowHandler = handler }
 
     func onActivateSearch(_ handler: @escaping () -> Void) {
         self.activateSearchHandler = handler
@@ -488,6 +500,28 @@ final class HotkeyService {
                 }
             }
             return true
+        }
+
+        // Arrow keys: navigate the list and drill into per-app windows.
+        // Only when search is inactive (otherwise arrows move the text cursor).
+        // Handled here — not via SwiftUI — because the tap swallows keys while
+        // the trigger modifier is held (the TabTab hold-and-navigate model).
+        if !searchActive {
+            switch keyCode {
+            case 126: // up
+                DispatchQueue.main.async { [weak self] in self?.upArrowHandler?() }
+                return true
+            case 125: // down
+                DispatchQueue.main.async { [weak self] in self?.downArrowHandler?() }
+                return true
+            case 124: // right
+                DispatchQueue.main.async { [weak self] in self?.rightArrowHandler?() }
+                return true
+            case 123: // left
+                DispatchQueue.main.async { [weak self] in self?.leftArrowHandler?() }
+                return true
+            default: break
+            }
         }
 
         // Number keys 1-9: only work as shortcuts when search is NOT active

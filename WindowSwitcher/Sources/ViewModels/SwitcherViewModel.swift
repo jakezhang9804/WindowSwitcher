@@ -2,16 +2,17 @@ import SwiftUI
 import Combine
 import AppSwitcherKit
 
-/// Represents a switcher item — an open window, an installed app, or an app group
+/// Represents a top-level switcher item — a single window, an app (aggregating
+/// its visible windows), or an app group (screen recording).
 enum SwitcherItem: Identifiable, Equatable, Hashable {
     case window(WindowInfo)
-    case app(bundleID: String, name: String, icon: NSImage?, path: String?)
+    case appWindows(bundleID: String, name: String, icon: NSImage?, windows: [WindowInfo])
     case group(AppGroup, icons: [NSImage])
 
     var id: String {
         switch self {
         case .window(let w): return "window-\(w.id)"
-        case .app(let bid, _, _, _): return "app-\(bid)"
+        case .appWindows(let bid, _, _, _): return "appwin-\(bid)"
         case .group(let g, _): return "group-\(g.id.uuidString)"
         }
     }
@@ -19,7 +20,7 @@ enum SwitcherItem: Identifiable, Equatable, Hashable {
     var displayName: String {
         switch self {
         case .window(let w): return w.appName
-        case .app(_, let name, _, _): return name
+        case .appWindows(_, let name, _, _): return name
         case .group(let g, _): return g.name
         }
     }
@@ -27,7 +28,8 @@ enum SwitcherItem: Identifiable, Equatable, Hashable {
     var subtitle: String? {
         switch self {
         case .window(let w): return w.title.isEmpty ? nil : w.title
-        case .app(_, _, _, _): return nil
+        case .appWindows(_, _, _, let windows):
+            return windows.count > 1 ? L10n.windowCountText(windows.count) : windows.first?.title
         case .group(let g, _): return L10n.groupMembers(g.bundleIDs.count)
         }
     }
@@ -35,7 +37,7 @@ enum SwitcherItem: Identifiable, Equatable, Hashable {
     var icon: NSImage? {
         switch self {
         case .window(let w): return w.appIcon
-        case .app(_, _, let icon, _): return icon
+        case .appWindows(_, _, let icon, _): return icon
         case .group: return nil // rendered as a composite stack in the view
         }
     }
@@ -51,6 +53,16 @@ enum SwitcherItem: Identifiable, Equatable, Hashable {
         return false
     }
 
+    /// The windows this item can drill into. An item with ≥2 windows opens a
+    /// secondary detail panel (TabTab's per-app grouping behavior).
+    var windows: [WindowInfo] {
+        switch self {
+        case .window(let w): return [w]
+        case .appWindows(_, _, _, let windows): return windows
+        case .group: return []
+        }
+    }
+
     static func == (lhs: SwitcherItem, rhs: SwitcherItem) -> Bool {
         lhs.id == rhs.id
     }
@@ -63,18 +75,27 @@ enum SwitcherItem: Identifiable, Equatable, Hashable {
 @MainActor
 class SwitcherViewModel: ObservableObject {
     @Published var searchText: String = ""
-    @Published var selectedIndex: Int = 0
     @Published var isSearchActive: Bool = false
+
+    /// Top-level selection. Changing it collapses any open secondary panel.
+    @Published var selectedIndex: Int = 0 {
+        didSet { if oldValue != selectedIndex { resetSecondary() } }
+    }
+
+    /// True while the secondary (per-app window) panel is drilled into.
+    @Published var secondaryActive: Bool = false
+    /// Selection within the secondary window list.
+    @Published var secondaryIndex: Int = 0
+
     @Published private(set) var windows: [WindowInfo] = []
-
-    /// All installed apps (cached across panel opens, refreshed in the background)
-    @Published private var installedApps: [InstalledAppItem] = []
-
-    /// Pinned (allowed) bundle IDs from settings
-    private var pinnedBundleIDs: Set<String> = []
 
     /// App groups from settings
     private var appGroups: [AppGroup] = []
+
+    /// "byApp" (one row per app, drill into windows) or "flat" (one row per window)
+    private var groupingMode: String {
+        UserDefaults.standard.string(forKey: "tabListGroupingMode") ?? "byApp"
+    }
 
     /// Bundle IDs (lowercased) that belong to some group — those apps are
     /// represented by the group only, never as a standalone window/app entry
@@ -87,82 +108,83 @@ class SwitcherViewModel: ObservableObject {
         return groupedBundleIDs.contains(bundleID.lowercased())
     }
 
-    /// Combined display items:
-    /// - When no search: running windows first, then app groups, then pinned
-    ///   apps that are NOT running. Apps that belong to a group are deduped out.
-    /// - When searching: matching windows, matching apps, then matching groups.
+    /// Top-level display items: visible windows (flat) or per-app rows (byApp),
+    /// then app groups. Grouped apps are deduped out. A non-empty search filters
+    /// by app name / window title / group name.
     var displayItems: [SwitcherItem] {
-        if searchText.isEmpty {
-            // Running windows (excluding grouped apps)
-            var items: [SwitcherItem] = windows
-                .filter { !isGrouped($0.appBundleID) }
-                .map { .window($0) }
+        let baseWindows = windows.filter { !isGrouped($0.appBundleID) }
 
-            // App groups — always present, treated like independent apps
-            items += appGroups.map { group in
-                .group(group, icons: group.bundleIDs.compactMap { Self.icon(forBundleID: $0) })
-            }
-
-            // Bundle IDs of running windows
-            let runningBundleIDs = Set(windows.compactMap { $0.appBundleID })
-
-            // Pinned apps that are NOT running and NOT in a group
-            let pinnedNotRunning = installedApps.filter { app in
-                pinnedBundleIDs.contains(app.bundleID)
-                    && !runningBundleIDs.contains(app.bundleID)
-                    && !isGrouped(app.bundleID)
-            }
-            items += pinnedNotRunning.map { app in
-                .app(bundleID: app.bundleID, name: app.name, icon: app.icon, path: app.path)
-            }
-
-            return items
+        var items: [SwitcherItem]
+        if groupingMode == "byApp" {
+            items = aggregateByApp(baseWindows)
+        } else {
+            items = baseWindows.map { .window($0) }
         }
 
-        let query = searchText.lowercased().trimmingCharacters(in: .whitespaces)
-        let queryWords = query.split(separator: " ").map(String.init)
-
-        // 1. Filter matching windows (excluding grouped apps)
-        let matchingWindows = windows.filter { window in
-            guard !isGrouped(window.appBundleID) else { return false }
-            let titleLower = window.title.lowercased()
-            let appNameLower = window.appName.lowercased()
-            return queryWords.allSatisfy { word in
-                titleLower.contains(word) || appNameLower.contains(word)
-            }
-        }
-
-        // Collect bundle IDs of matching windows to avoid duplicates
-        let windowBundleIDs = Set(matchingWindows.compactMap { $0.appBundleID })
-
-        // 2. Filter matching installed apps (exclude those already shown as windows or grouped)
-        let matchingApps = installedApps.filter { app in
-            guard !windowBundleIDs.contains(app.bundleID), !isGrouped(app.bundleID) else { return false }
-            let nameLower = app.name.lowercased()
-            return queryWords.allSatisfy { word in
-                nameLower.contains(word)
-            }
-        }
-
-        // 3. Matching groups (by name)
-        let matchingGroups = appGroups.filter { group in
-            let nameLower = group.name.lowercased()
-            return queryWords.allSatisfy { nameLower.contains($0) }
-        }
-
-        // Combine: windows first, then apps (limit to 20), then groups
-        var items: [SwitcherItem] = matchingWindows.map { .window($0) }
-        items += matchingApps.prefix(20).map { app in
-            .app(bundleID: app.bundleID, name: app.name, icon: app.icon, path: app.path)
-        }
-        items += matchingGroups.map { group in
+        items += appGroups.map { group in
             .group(group, icons: group.bundleIDs.compactMap { Self.icon(forBundleID: $0) })
         }
 
-        return items
+        let query = searchText.lowercased().trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return items }
+        let words = query.split(separator: " ").map(String.init)
+        return items.filter { item in
+            let haystack = matchText(for: item)
+            return words.allSatisfy { word in haystack.contains { $0.contains(word) } }
+        }
+    }
+
+    /// Collapse windows into one row per app, preserving front-to-back order
+    private func aggregateByApp(_ wins: [WindowInfo]) -> [SwitcherItem] {
+        var order: [String] = []
+        var byKey: [String: [WindowInfo]] = [:]
+        for w in wins {
+            let key = w.appBundleID ?? "pid-\(w.appPID)"
+            if byKey[key] == nil { order.append(key) }
+            byKey[key, default: []].append(w)
+        }
+        return order.map { key in
+            let ws = byKey[key] ?? []
+            let first = ws.first
+            return .appWindows(
+                bundleID: key,
+                name: first?.appName ?? key,
+                icon: first?.appIcon,
+                windows: ws
+            )
+        }
+    }
+
+    private func matchText(for item: SwitcherItem) -> [String] {
+        switch item {
+        case .window(let w):
+            return [w.appName.lowercased(), w.title.lowercased()]
+        case .appWindows(_, let name, _, let ws):
+            return [name.lowercased()] + ws.map { $0.title.lowercased() }
+        case .group(let g, _):
+            return [g.name.lowercased()]
+        }
     }
 
     var totalCount: Int { displayItems.count }
+
+    var selectedItem: SwitcherItem? {
+        let items = displayItems
+        guard selectedIndex >= 0 && selectedIndex < items.count else { return nil }
+        return items[selectedIndex]
+    }
+
+    /// Windows of the selected item, only when it's drillable (≥2 windows).
+    var expandedWindows: [WindowInfo] {
+        let w = selectedItem?.windows ?? []
+        return w.count >= 2 ? w : []
+    }
+
+    /// The list actually on screen: the app's windows when drilled in, else the
+    /// top-level items. Used by number-key jump and the count-driven resize.
+    var displayedItems: [SwitcherItem] {
+        secondaryActive ? expandedWindows.map { .window($0) } : displayItems
+    }
 
     /// Icon lookup for group members (cached — NSWorkspace lookups add up when
     /// rebuilding the list on every panel open)
@@ -178,19 +200,6 @@ class SwitcherViewModel: ObservableObject {
         return icon
     }
 
-    var selectedItem: SwitcherItem? {
-        let items = displayItems
-        guard selectedIndex >= 0 && selectedIndex < items.count else { return nil }
-        return items[selectedIndex]
-    }
-
-    var selectedWindow: WindowInfo? {
-        if let item = selectedItem, case .window(let w) = item {
-            return w
-        }
-        return nil
-    }
-
     private let windowService: WindowService
     private let settingsStore: UserDefaultsSwitcherSettingsStore
     private var cancellables = Set<AnyCancellable>()
@@ -199,16 +208,7 @@ class SwitcherViewModel: ObservableObject {
         self.windowService = windowService
         self.settingsStore = settingsStore
 
-        // Load installed apps cache
-        loadInstalledApps()
-
-        // Load pinned bundle IDs from settings
-        let settings = settingsStore.load()
-        self.pinnedBundleIDs = settings.allowedBundleIDs
-
         // Reset selection when search text actually changes.
-        // removeDuplicates + dropFirst prevent the initial ""/refreshWindows()
-        // assignments from clobbering the default "previous window" selection.
         $searchText
             .removeDuplicates()
             .dropFirst()
@@ -221,101 +221,103 @@ class SwitcherViewModel: ObservableObject {
 
     func refreshWindows() {
         let settings = settingsStore.load()
-        self.pinnedBundleIDs = settings.allowedBundleIDs
         self.appGroups = settings.appGroups
-        // Default list: only show windows from pinned apps (when pinned list is non-empty)
-        windows = windowService.getAllWindows(allowedBundleIDs: settings.allowedBundleIDs)
+        windows = windowService.getAllWindows()
         searchText = ""
         isSearchActive = false
-        // TabTab behavior: default select the second ENTRY (previous window).
-        // Based on displayItems, not windows — grouping filters/appends change count.
+        resetSecondary()
+        // Default-select the second entry (the previous app/window), TabTab-style
         selectedIndex = displayItems.count > 1 ? 1 : 0
     }
 
+    // MARK: - Navigation
+
+    /// Top-level next (Tab / Cmd+Tab cycle). Always operates on the app list.
     func selectNext() {
+        resetSecondary()
         let count = displayItems.count
         guard count > 0 else { return }
         selectedIndex = (selectedIndex + 1) % count
     }
 
     func selectPrevious() {
+        resetSecondary()
         let count = displayItems.count
         guard count > 0 else { return }
         selectedIndex = (selectedIndex - 1 + count) % count
     }
 
-    /// Activate an item — switch to the window, activate/launch the app,
-    /// or bring up the whole app group
+    /// Down arrow: move within the secondary list if open, else next top-level.
+    func moveDown() {
+        if secondaryActive {
+            let count = expandedWindows.count
+            if secondaryIndex < count - 1 { secondaryIndex += 1 }
+        } else {
+            selectNext()
+        }
+    }
+
+    /// Up arrow: move within the secondary list (backing out at the top), else
+    /// previous top-level.
+    func moveUp() {
+        if secondaryActive {
+            if secondaryIndex == 0 { secondaryActive = false } else { secondaryIndex -= 1 }
+        } else {
+            selectPrevious()
+        }
+    }
+
+    /// Right arrow: drill into the selected app's windows (if ≥2).
+    func enterSecondary() {
+        guard expandedWindows.count >= 2 else { return }
+        secondaryActive = true
+        secondaryIndex = 0
+    }
+
+    /// Left arrow / Escape: back out of the secondary panel.
+    func exitSecondary() {
+        secondaryActive = false
+        secondaryIndex = 0
+    }
+
+    private func resetSecondary() {
+        if secondaryActive { secondaryActive = false }
+        secondaryIndex = 0
+    }
+
+    /// Set the selection in whichever list is currently displayed (used by the
+    /// number-key jump).
+    func selectDisplayed(_ index: Int) {
+        if secondaryActive { secondaryIndex = index } else { selectedIndex = index }
+    }
+
+    // MARK: - Activation
+
+    /// Activate the current selection, resolving the secondary panel: a drilled-in
+    /// window wins, otherwise the app's frontmost window / the group.
+    func activateResolvedSelection() {
+        guard let item = selectedItem else { return }
+        if secondaryActive, expandedWindows.indices.contains(secondaryIndex) {
+            windowService.activateWindow(expandedWindows[secondaryIndex])
+            return
+        }
+        activate(item)
+    }
+
+    /// Activate a specific item (top-level tap or default action)
     func activate(_ item: SwitcherItem) {
         switch item {
         case .window(let window):
             windowService.activateWindow(window)
-        case .app(let bundleID, _, _, _):
-            windowService.activateApp(bundleID: bundleID)
+        case .appWindows(_, _, _, let windows):
+            if let first = windows.first { windowService.activateWindow(first) }
         case .group(let group, _):
             windowService.activateGroup(group)
         }
     }
 
-    /// Activate the currently selected item
-    func activateSelectedItem() {
-        guard let item = selectedItem else { return }
-        activate(item)
+    /// Activate a specific window (secondary-panel tap)
+    func activate(window: WindowInfo) {
+        windowService.activateWindow(window)
     }
-
-    // MARK: - Private
-
-    /// Shared across view model instances so the panel opens without rescanning the disk each time
-    private static var cachedInstalledApps: [InstalledAppItem]?
-    private static var lastCatalogRefresh: Date = .distantPast
-    private static let catalogRefreshInterval: TimeInterval = 300
-
-    /// Warm the shared catalog cache at app launch. Without this, the first
-    /// panel open races the background scan and pinned apps whose windows are
-    /// minimized or on another Space are missing from the list.
-    static func warmInstalledAppsCache() {
-        guard cachedInstalledApps == nil else { return }
-        lastCatalogRefresh = Date()
-        refreshInstalledAppsCache(into: nil)
-    }
-
-    private func loadInstalledApps() {
-        if let cached = Self.cachedInstalledApps {
-            installedApps = cached
-        }
-
-        guard Date().timeIntervalSince(Self.lastCatalogRefresh) >= Self.catalogRefreshInterval else {
-            return
-        }
-        Self.lastCatalogRefresh = Date()
-        Self.refreshInstalledAppsCache(into: self)
-    }
-
-    /// Scanning /Applications and loading icons is slow — runs off the main
-    /// thread and publishes into the shared cache (and the given view model)
-    private static func refreshInstalledAppsCache(into viewModel: SwitcherViewModel?) {
-        Task.detached(priority: .userInitiated) { [weak viewModel] in
-            let catalog = InstalledAppCatalog()
-            let apps = catalog.fetchInstalledApps().map { app in
-                InstalledAppItem(
-                    bundleID: app.bundleID,
-                    name: app.displayName,
-                    icon: NSWorkspace.shared.icon(forFile: app.bundlePath),
-                    path: app.bundlePath
-                )
-            }
-            await MainActor.run { [weak viewModel] in
-                Self.cachedInstalledApps = apps
-                viewModel?.installedApps = apps
-            }
-        }
-    }
-}
-
-/// Lightweight struct for cached installed app info
-private struct InstalledAppItem {
-    let bundleID: String
-    let name: String
-    let icon: NSImage?
-    let path: String?
 }

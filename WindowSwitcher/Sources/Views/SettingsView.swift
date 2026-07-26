@@ -35,6 +35,7 @@ struct PreferencesTab: View {
     @AppStorage("screenMode") private var screenMode = "focused"
     @AppStorage("selectedScreenIndex") private var selectedScreenIndex = 0
     @AppStorage("appTheme") private var appTheme = "system"
+    @AppStorage("tabListGroupingMode") private var tabListGroupingMode = "byApp"
 
     @StateObject private var settingsVM = SettingsViewModel()
     @StateObject private var appConfigVM = AppConfigViewModel()
@@ -110,6 +111,21 @@ struct PreferencesTab: View {
                 }
             }
 
+            // Switcher list grouping — flat window list vs. TabTab-style
+            // per-app grouping (one row per app, secondary panel for windows)
+            Section {
+                Picker(L10n.groupingModeTitle, selection: $tabListGroupingMode) {
+                    Text(L10n.groupingModeFlat).tag("flat")
+                    Text(L10n.groupingModeByApp).tag("byApp")
+                }
+            } header: {
+                Text(L10n.switcherListTitle)
+            } footer: {
+                Text(L10n.groupingModeDescription)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             // App Groups — record a screen's window layout as one switcher entry
             Section {
                 AppGroupsSection(appConfigVM: appConfigVM)
@@ -117,46 +133,6 @@ struct PreferencesTab: View {
                 Text(L10n.appGroupsTitle)
             } footer: {
                 Text(L10n.appGroupsDescription)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            // Pinned Apps — bounded inner list like System Settings' Login Items
-            Section {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundColor(.secondary)
-                    TextField("", text: $appConfigVM.searchText, prompt: Text(L10n.searchAppsPlaceholder))
-                        .labelsHidden()
-                        .textFieldStyle(.plain)
-                }
-
-                if let errorMsg = appConfigVM.errorMessage {
-                    Text(errorMsg)
-                        .font(.caption)
-                        .foregroundColor(.red)
-                }
-
-                if appConfigVM.filteredApps.isEmpty {
-                    Text(L10n.noAppsFound)
-                        .foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.vertical, 12)
-                } else {
-                    List {
-                        ForEach(appConfigVM.filteredApps) { app in
-                            PinnedAppRow(app: app, viewModel: appConfigVM)
-                        }
-                    }
-                    .listStyle(.bordered)
-                    .alternatingRowBackgrounds(.enabled)
-                    .environment(\.defaultMinListRowHeight, 30)
-                    .frame(height: 260)
-                }
-            } header: {
-                Text(L10n.pinnedAppsTitle)
-            } footer: {
-                Text(L10n.pinnedAppsDescription)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -209,75 +185,6 @@ struct PreferencesTab: View {
     private var screenNames: [String] {
         NSScreen.screens.enumerated().map { index, screen in
             screen.localizedName
-        }
-    }
-}
-
-// MARK: - Pinned App Row
-
-struct PinnedAppRow: View {
-    let app: AppDisplayItem
-    @ObservedObject var viewModel: AppConfigViewModel
-
-    @State private var triggerKeyText: String = ""
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Toggle("", isOn: Binding(
-                get: { viewModel.isPinned(app.bundleID) },
-                set: { viewModel.setPinned(app.bundleID, pinned: $0) }
-            ))
-            .toggleStyle(.checkbox)
-            .labelsHidden()
-
-            if let icon = app.icon {
-                Image(nsImage: icon)
-                    .resizable()
-                    .frame(width: 22, height: 22)
-            } else {
-                Image(systemName: "app")
-                    .frame(width: 22, height: 22)
-            }
-
-            Text(app.name)
-                .font(.system(size: 13))
-                .lineLimit(1)
-
-            Spacer()
-
-            if viewModel.isPinned(app.bundleID) {
-                HStack(spacing: 4) {
-                    Text("⌥ +")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
-
-                    // In a Form the title parameter renders as a separate label
-                    // and wrecks the row layout — hide it and center the key
-                    TextField("", text: $triggerKeyText)
-                        .labelsHidden()
-                        .textFieldStyle(.roundedBorder)
-                        .multilineTextAlignment(.center)
-                        .frame(width: 36)
-                        .font(.system(size: 12, design: .monospaced))
-                        .onChange(of: triggerKeyText) { _, newValue in
-                            let filtered = String(newValue.prefix(1)).uppercased()
-                            guard filtered == newValue else {
-                                // Re-triggers onChange with the normalized value,
-                                // so the save happens exactly once
-                                triggerKeyText = filtered
-                                return
-                            }
-                            viewModel.setTriggerKey(app.bundleID, key: filtered)
-                            if viewModel.errorMessage != nil {
-                                // Save rejected (duplicate key) — show the stored value
-                                triggerKeyText = viewModel.triggerKey(for: app.bundleID)
-                            }
-                        }
-                }
-            }
-        }
-        .onAppear {
-            triggerKeyText = viewModel.triggerKey(for: app.bundleID)
         }
     }
 }
@@ -462,39 +369,16 @@ struct AppDisplayItem: Identifiable {
 
 // MARK: - App Config ViewModel
 
+/// Provides the installed/running app catalog — used by the App Groups section
+/// to resolve member icons.
 @MainActor
 class AppConfigViewModel: ObservableObject {
-    @Published var searchText = ""
     @Published var apps: [AppDisplayItem] = []
-    @Published var errorMessage: String?
 
-    private let settingsStore: UserDefaultsSwitcherSettingsStore
-    private let catalog: InstalledAppCatalog
-    private var currentSettings: SwitcherSettings
-
-    var filteredApps: [AppDisplayItem] {
-        let sorted = apps.sorted { a, b in
-            let aPinned = isPinned(a.bundleID)
-            let bPinned = isPinned(b.bundleID)
-            if aPinned != bPinned { return aPinned }
-            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
-        }
-        if searchText.isEmpty {
-            return sorted
-        }
-        return sorted.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
-    }
+    private let catalog = InstalledAppCatalog()
 
     init() {
-        self.settingsStore = UserDefaultsSwitcherSettingsStore()
-        self.catalog = InstalledAppCatalog()
-        self.currentSettings = SwitcherSettings()
-        loadSettings()
         loadApps()
-    }
-
-    private func loadSettings() {
-        currentSettings = settingsStore.load()
     }
 
     private func loadApps() {
@@ -514,55 +398,6 @@ class AppConfigViewModel: ObservableObject {
         }
 
         apps = Array(appsByBundleID.values)
-    }
-
-    func isPinned(_ bundleID: String) -> Bool {
-        currentSettings.allowedBundleIDs.contains(bundleID)
-    }
-
-    func setPinned(_ bundleID: String, pinned: Bool) {
-        if pinned {
-            currentSettings.allowedBundleIDs.insert(bundleID)
-        } else {
-            currentSettings.allowedBundleIDs.remove(bundleID)
-            currentSettings.appBindings.removeAll { $0.bundleID == bundleID }
-        }
-        saveSettings()
-    }
-
-    func triggerKey(for bundleID: String) -> String {
-        currentSettings.triggerKey(for: bundleID) ?? ""
-    }
-
-    func setTriggerKey(_ bundleID: String, key: String) {
-        currentSettings.appBindings.removeAll { $0.bundleID == bundleID }
-
-        if !key.isEmpty {
-            currentSettings.appBindings.append(
-                AppBinding(bundleID: bundleID, triggerKey: key)
-            )
-        }
-        saveSettings()
-    }
-
-    private func saveSettings() {
-        errorMessage = nil
-        // Read-modify-write only THIS view model's domain (pins + bindings) onto
-        // the freshly persisted settings, so a concurrent App Groups edit isn't
-        // clobbered by this view model's stale snapshot.
-        var persisted = settingsStore.load()
-        persisted.allowedBundleIDs = currentSettings.allowedBundleIDs
-        persisted.appBindings = currentSettings.appBindings
-        do {
-            try settingsStore.save(persisted)
-            currentSettings = settingsStore.load()
-            NotificationCenter.default.post(name: .switcherSettingsDidChange, object: nil)
-        } catch {
-            // Roll back the in-memory settings — keeping the rejected change
-            // around would make every subsequent save fail as well
-            currentSettings = settingsStore.load()
-            errorMessage = error.localizedDescription
-        }
     }
 }
 
