@@ -11,9 +11,9 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/macOS-14.0%2B-blue" alt="macOS 14.0+">
-  <img src="https://img.shields.io/badge/Swift-5.9-orange" alt="Swift 5.9">
-  <img src="https://img.shields.io/github/v/release/yuzhang9804/WindowSwitcher" alt="Latest Release">
-  <img src="https://img.shields.io/github/license/yuzhang9804/WindowSwitcher" alt="License">
+  <img src="https://img.shields.io/badge/Swift-6.2%2B-orange" alt="Swift 6.2+">
+  <img src="https://img.shields.io/github/v/release/jakezhang9804/WindowSwitcher" alt="Latest Release">
+  <img src="https://img.shields.io/github/license/jakezhang9804/WindowSwitcher" alt="License">
 </p>
 
 ---
@@ -28,18 +28,20 @@
 
 **Global App Search** — Type to search not only open windows but also all installed applications on your system. Open windows are prioritized at the top, with matching installed apps listed below. Select any app to launch it instantly.
 
-**Keyboard-First Design** — Every interaction is optimized for keyboard use. Arrow keys navigate the list, Enter activates the selection, Escape dismisses the panel or clears the search, and number keys 1–9 provide instant access to the first nine items.
+**Window Groups** — Record the applications and primary-window positions on a display as a workspace. Activating a group launches missing apps, restores saved geometry, and focuses the first member. Display bindings use stable display UUIDs so monitor reordering does not silently redirect a group.
 
-**Auto Update** — WindowSwitcher checks for new releases on GitHub automatically. When a new version is available, a notification banner appears in the Settings panel with a direct download link.
+**Keyboard-First Design** — Arrow keys navigate the list, Right Arrow opens an app's windows, Left Arrow and Escape move back through the hierarchy, and number keys 1–9 provide instant access to the first nine items.
+
+**Update Checks** — WindowSwitcher checks the current GitHub repository for new releases and shows explicit idle, checking, up-to-date, available, and failure states in Settings → About.
 
 **Native macOS Experience** — Built entirely with SwiftUI and AppKit, WindowSwitcher integrates seamlessly with macOS. The panel uses a native vibrancy effect and respects your system appearance settings.
 
 ## Installation
 
-1. Download the latest `.dmg` from the [Releases](https://github.com/yuzhang9804/WindowSwitcher/releases) page
+1. Download the latest `.dmg` from the [Releases](https://github.com/jakezhang9804/WindowSwitcher/releases) page
 2. Open the DMG and drag **WindowSwitcher** to your Applications folder
 3. Launch WindowSwitcher — it will appear as a menu bar icon
-4. Grant **Accessibility** and **Screen Recording** permissions when prompted
+4. Open Settings → General and grant **Accessibility** and **Screen Recording** access
 
 ## Usage
 
@@ -48,40 +50,40 @@
 | Open switcher | `Option + Tab` (or `Command + Tab` when takeover is enabled) |
 | Cycle to next window | `Tab` or `↓` |
 | Cycle to previous window | `Shift + Tab` or `↑` |
-| Activate selected window | Release the modifier or press `Enter` |
+| Activate selected window | Release the modifier; when searching, press `Enter` |
 | Quick select | `1` – `9` |
 | Activate search | `Enter` (when search is inactive) |
-| Clear search / deactivate | `Escape` |
-| Dismiss panel | `Escape` (when search is empty) |
+| Open an app's window list | `→` |
+| Return from a window list | `←` or `Escape` |
+| Deactivate search | `Escape` |
+| Dismiss panel | `Escape` at the top level |
 
 ## Settings
 
-WindowSwitcher provides a comprehensive preferences panel accessible from the menu bar icon:
+WindowSwitcher uses a native sidebar settings center accessible from the menu bar and from both switcher layouts:
 
 | Section | Options |
 |---------|---------|
-| **Permissions** | Live permission status with guided grant flow (PermissionFlow) |
-| **General** | Show menu bar icon, Start at login |
+| **General** | Live permission status, menu bar icon, start at login, list grouping |
 | **Appearance** | Theme (System / Light / Dark), Panel position (Left / Center / Right) |
-| **Display** | Choose which screen the panel appears on (shows actual monitor names) |
-| **Pinned Apps** | Select apps to pin — the switcher will only cycle through pinned apps; optionally assign per-app trigger keys (A–Z, 0–9) |
-| **Hotkeys** | `Option + Tab` or `Command + Tab` (system switcher takeover) |
-| **About** | Version info, update check, links |
+| **Displays** | Pointer display or a fixed display saved by stable display UUID |
+| **Window Groups** | Record, rename, re-record, and delete multi-app window layouts |
+| **Keyboard Shortcuts** | `Option + Tab` or `Command + Tab`, plus a full navigation reference |
+| **About** | Version info, explicit update states, project link, and Quit |
 
 ## Tech Stack
 
 | Technology | Purpose |
 |------------|---------|
-| **Swift 5.9+** | Primary language |
+| **Swift 6.2+** | Primary language and package toolchain |
 | **SwiftUI** | User interface |
 | **AppKit** | System integration (NSPanel, NSVisualEffectView, menu bar) |
 | **CGEventTap** | Primary input path — hotkey interception (incl. ⌘+Tab takeover) and reliable modifier-release detection |
 | **Accessibility API** | Window activation and raising |
 | **CGWindowList** | Window enumeration across Spaces |
 | **SkyLight (private)** | Fronting windows that live on other Spaces |
-| **KeyboardShortcuts** | Carbon hotkey fallback ([sindresorhus/KeyboardShortcuts](https://github.com/sindresorhus/KeyboardShortcuts)) |
 | **PermissionFlow** | Guided permission onboarding ([jaywcjlove/PermissionFlow](https://github.com/jaywcjlove/PermissionFlow)) |
-| **AppSwitcherKit** | Local library for settings storage, app catalog, and pinned app bindings |
+| **AppSwitcherKit** | Local library for settings storage, app catalog, and window groups |
 
 ## Project Structure
 
@@ -106,28 +108,36 @@ WindowSwitcher/
 │   ├── Models/
 │   │   └── WindowInfo.swift           # Window data model
 │   └── Utils/
+│       ├── DisplayIdentity.swift      # Stable CGDisplay UUID mapping
 │       └── L10n.swift                 # Runtime localization (EN/ZH)
 ├── Resources/
 │   └── Info.plist
 ├── Assets.xcassets/
 │   └── AppIcon.appiconset/
 └── Libraries/
-    └── AppSwitcherKit/                # Local Swift package
+    └── AppSwitcherKit/                # Settings, app catalog, groups, migrations
 ```
 
 ## Building from Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/yuzhang9804/WindowSwitcher.git
+git clone https://github.com/jakezhang9804/WindowSwitcher.git
 cd WindowSwitcher
 
 # Build with Swift Package Manager
 swift build -c release
 
-# Or open in Xcode
-open WindowSwitcher.xcodeproj
+# Run the local library test suite
+./Scripts/test-appswitcherkit.sh
+
+# Run the debug build
+swift run WindowSwitcher
 ```
+
+### Release signing
+
+Branch and pull-request builds produce **ad-hoc signed development artifacts**. Tag builds also fall back to ad-hoc artifacts and skip the public GitHub Release unless the repository has `MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID` Actions secrets. With all secrets configured, a `vMAJOR.MINOR.PATCH` tag build uses Developer ID, submits the DMG to Apple notary service, staples the ticket to both the app and DMG, and runs Gatekeeper assessment before creating the GitHub Release.
 
 ## System Requirements
 
@@ -135,6 +145,8 @@ open WindowSwitcher.xcodeproj
 - Apple Silicon or Intel Mac
 - Accessibility permission required
 - Screen Recording permission required (for reading window titles)
+
+> WindowSwitcher uses private SkyLight symbols for cross-Space activation. It is intended for direct distribution rather than the Mac App Store, and cross-Space behavior should be retested on each major macOS release.
 
 ## License
 

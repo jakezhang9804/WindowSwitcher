@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import KeyboardShortcuts
 import AppSwitcherKit
 import PermissionFlowScreenRecordingStatus
 
@@ -12,16 +11,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var switcherPanel: KeyablePanel?
     private var settingsWindowController: NSWindowController?
+    private var settingsWindowCloseObserver: NSObjectProtocol?
 
     private let windowService = WindowService()
     private let settingsStore = UserDefaultsSwitcherSettingsStore()
     private let hotkeyService = HotkeyService()
+
+    /// Accessibility can be granted while the app is already running. Retry the
+    /// event tap briefly so the hotkey starts working without a relaunch.
+    private var permissionRetryTimer: Timer?
 
     /// The SwiftUI view model — kept here so HotkeyService can drive Tab cycling
     private var switcherViewModel: SwitcherViewModel?
 
     /// The hosting view for the current switcher panel content
     private var currentHostingView: NSHostingView<SwitcherWindow>?
+
+    /// Search temporarily activates this accessory app for IME input. Keep the
+    /// prior foreground app so cancelling the switcher can return focus cleanly.
+    private var previousFrontmostApplication: NSRunningApplication?
 
     /// True while a confirm is in flight. Guards against a double-confirm when a
     /// number-key press and a modifier-release land almost simultaneously (each
@@ -43,17 +51,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusBarItem()
         setupGlobalHotkey()
 
-        // Primary input path: CGEventTap (enables Cmd+Tab takeover and
-        // reliable modifier-release detection). Requires accessibility trust;
-        // falls back to the Carbon hotkey + NSEvent monitors when unavailable.
+        // CGEventTap enables Cmd+Tab takeover and reliable modifier-release
+        // detection. It shares the Accessibility permission already required
+        // for enumerating and activating windows.
         hotkeyService.startEventTap()
+        scheduleEventTapRetryIfNeeded()
 
         // Check accessibility permission. Without it the global keyDown
         // monitors (number quick-select, Enter/Escape, Option+Key bindings)
         // receive nothing, so surface the state in the log for diagnosis.
         NSLog("[WS] Accessibility trusted: \(AccessibilityService.isAccessibilityEnabled)")
         if !AccessibilityService.isAccessibilityEnabled {
-            AccessibilityService.requestAccessibilityPermission()
+            if !UserDefaults.standard.bool(forKey: "hasPresentedPermissionSetup") {
+                UserDefaults.standard.set(true, forKey: "hasPresentedPermissionSetup")
+                AccessibilityService.requestAccessibilityPermission()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                    self?.openPreferences()
+                }
+            }
         }
 
         // Listen for settings changes
@@ -91,6 +106,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UpdateService.shared.startAutomaticChecks()
 
         NSLog("[WS] All initialization complete")
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        permissionRetryTimer?.invalidate()
+        permissionRetryTimer = nil
+        hotkeyService.stopEventTap()
+        hotkeyService.switcherDidHide()
+        UpdateService.shared.stopAutomaticChecks()
+        if let settingsWindowCloseObserver {
+            NotificationCenter.default.removeObserver(settingsWindowCloseObserver)
+            self.settingsWindowCloseObserver = nil
+        }
+        NotificationCenter.default.removeObserver(self)
+        DistributedNotificationCenter.default().removeObserver(self)
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard AccessibilityService.isAccessibilityEnabled,
+              !hotkeyService.isEventTapActive else { return }
+        hotkeyService.stopEventTap()
+        hotkeyService.startEventTap()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { openPreferences() }
+        return true
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
@@ -240,7 +281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let items = self.switcherViewModel?.displayedItems ?? []
                     NSLog("[WS] Number \(number): index=\(index), totalItems=\(items.count)")
                     if index >= 0 && index < items.count {
-                        NSLog("[WS] Number \(number): selecting item=\(items[index].displayName)")
+                        NSLog("[WS] Number \(number): selecting valid item")
                         self.switcherViewModel?.selectDisplayed(index)
                         self.confirmAndHideSwitcher()
                     } else {
@@ -250,15 +291,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Escape when search not active → dismiss panel
+        // Escape follows the visible hierarchy: search is handled by
+        // HotkeyService, then a window drill-down backs out, and only the
+        // top-level list dismisses.
         hotkeyService.onEscape { [weak self] in
-            NSLog("[WS] Escape pressed — dismissing")
             DispatchQueue.main.async {
-                self?.hideSwitcher()
+                guard let self else { return }
+                if self.switcherViewModel?.secondaryActive == true {
+                    NSLog("[WS] Escape pressed — leaving secondary list")
+                    self.switcherViewModel?.exitSecondary()
+                } else {
+                    NSLog("[WS] Escape pressed — dismissing")
+                    self.hideSwitcher()
+                }
             }
         }
 
         NSLog("[WS] Global hotkey registered")
+    }
+
+    private func scheduleEventTapRetryIfNeeded() {
+        permissionRetryTimer?.invalidate()
+        guard !hotkeyService.isEventTapActive else { return }
+
+        let timer = Timer(timeInterval: 1.5, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            guard AccessibilityService.isAccessibilityEnabled else { return }
+
+            self.hotkeyService.startEventTap()
+            if self.hotkeyService.isEventTapActive {
+                timer.invalidate()
+                self.permissionRetryTimer = nil
+                NSLog("[WS][Hotkey] Event tap started after permission grant")
+            }
+        }
+        timer.tolerance = 0.2
+        RunLoop.main.add(timer, forMode: .common)
+        permissionRetryTimer = timer
     }
 
     @objc private func settingsDidChange() {
@@ -286,6 +358,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard let panel = switcherPanel else { return }
 
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        if frontmost?.bundleIdentifier != Bundle.main.bundleIdentifier {
+            previousFrontmostApplication = frontmost
+        }
+
         // Create a shared view model so HotkeyService can drive Tab cycling
         let vm = MainActor.assumeIsolated {
             SwitcherViewModel(
@@ -306,11 +383,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let contentView = SwitcherWindow(
             viewModel: vm,
             layout: layout,
-            onDismiss: { [weak self] in
-                self?.hideSwitcher()
+            onConfirm: { [weak self] in
+                self?.confirmAndHideSwitcher()
             },
             onOpenSettings: { [weak self] in
-                self?.hideSwitcher()
+                self?.hideSwitcher(restorePreviousApp: false)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                     self?.openPreferences()
                 }
@@ -325,14 +402,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Create NSVisualEffectView as the container for blur background
         // (the centered strip uses the larger radius of the native switcher)
-        let cornerRadius: CGFloat = layout == .strip ? 22 : 12
+        let cornerRadius: CGFloat = layout == .strip ? 22 : 16
         let visualEffectView = NSVisualEffectView()
-        visualEffectView.material = .hudWindow
-        visualEffectView.blendingMode = .behindWindow
+        visualEffectView.material = .popover
+        visualEffectView.blendingMode = .withinWindow
         visualEffectView.state = .active
-        // Round the corners via maskImage — the sanctioned way for behindWindow
-        // blending. Rounding only the layer leaves the blur region square,
-        // which shows as opaque corner artifacts (white in light mode).
+        // Mask the material itself as well as its layer so both composition
+        // modes keep clean antialiased corners without opaque edge artifacts.
         visualEffectView.maskImage = Self.roundedCornerMask(radius: cornerRadius)
         visualEffectView.wantsLayer = true
         visualEffectView.layer?.cornerRadius = cornerRadius
@@ -388,10 +464,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Search bar: padding-top 10 + content (padding-v 8*2 = 16 + text ~16 = 32) + padding-bottom 4 = 46px
         let searchBarHeight: CGFloat = 46
 
-        // Item: icon 28px + vertical padding 7*2 = 42px
-        // Spacing between items: 2px
-        let itemHeight: CGFloat = 42
-        let itemSpacing: CGFloat = 2
+        let itemHeight = SwitcherWindow.listRowHeight
+        let itemSpacing = SwitcherWindow.listRowSpacing
 
         // Bottom bar: padding 8*2 + content ~16px = 32px
         let bottomBarHeight: CGFloat = 32
@@ -479,32 +553,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             isConfirming = true
 
-            if let item = switcherViewModel?.selectedItem {
-                NSLog("[WS] Confirming: activating item=\(item.displayName), secondary=\(switcherViewModel?.secondaryActive ?? false)")
-            } else {
-                NSLog("[WS] Confirming: no selected item!")
+            guard let viewModel = switcherViewModel, viewModel.selectedItem != nil else {
+                NSLog("[WS] Confirm ignored — no selected item")
+                isConfirming = false
+                return
             }
 
-            // 1) Relinquish the panel's key focus before activating the target
+            if let item = viewModel.selectedItem {
+                NSLog("[WS] Confirming: activating id=\(item.id), secondary=\(switcherViewModel?.secondaryActive ?? false)")
+            }
+
+            // 1) Relinquish focus and fully tear down the panel session.
             switcherPanel?.orderOut(nil)
-
-            // 2) Activate the resolved target (secondary window wins if drilled in)
-            switcherViewModel?.activateResolvedSelection()
-
-            // 3) Tear down state
             switcherViewModel = nil
             currentHostingView = nil
+            switcherPanel?.contentView = nil
             hotkeyService.switcherDidHide()
+
+            // 2) Activate the resolved target only after no switcher window or
+            // input monitor can race to reclaim focus.
+            previousFrontmostApplication = nil
+            viewModel.activateResolvedSelection()
             isConfirming = false
             NSLog("[WS] Switcher hidden (after confirm)")
         }
     }
 
-    private func hideSwitcher() {
+    private func hideSwitcher(restorePreviousApp: Bool = true) {
         switcherPanel?.orderOut(nil)
         switcherViewModel = nil
         currentHostingView = nil
+        switcherPanel?.contentView = nil
         hotkeyService.switcherDidHide()
+
+        if restorePreviousApp,
+           NSApp.isActive,
+           let previous = previousFrontmostApplication,
+           !previous.isTerminated,
+           previous.bundleIdentifier != Bundle.main.bundleIdentifier {
+            previous.activate()
+        }
+        previousFrontmostApplication = nil
         NSLog("[WS] Switcher hidden")
     }
 
@@ -525,7 +614,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true
-        panel.animationBehavior = .utilityWindow
+        panel.animationBehavior = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            ? .none
+            : .utilityWindow
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = false  // Allow becoming key immediately
 
@@ -556,9 +647,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func targetScreen() -> NSScreen {
         let screenMode = UserDefaults.standard.string(forKey: "screenMode") ?? "focused"
         if screenMode == "fixed" {
+            let selectedDisplayID = UserDefaults.standard.string(forKey: "selectedScreenID")
+            if let screen = NSScreen.screen(withPersistentDisplayID: selectedDisplayID) {
+                return screen
+            }
+
+            // Legacy installations only persisted the array index. Use it once
+            // when no UUID exists; the settings page migrates it on first open.
             let selectedIndex = UserDefaults.standard.integer(forKey: "selectedScreenIndex")
             let screens = NSScreen.screens
-            if selectedIndex >= 0 && selectedIndex < screens.count {
+            if (selectedDisplayID ?? "").isEmpty,
+               selectedIndex >= 0 && selectedIndex < screens.count {
                 return screens[selectedIndex]
             }
             return NSScreen.main ?? NSScreen.screens.first!
@@ -575,15 +674,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let screen = targetScreen()
         let visible = screen.visibleFrame
 
-        // Cells are 76pt + 2pt spacing inside 14pt horizontal padding
-        let contentWidth = CGFloat(max(itemCount, 1)) * 76
-            + CGFloat(max(itemCount - 1, 0)) * 2 + 28
-        let width = min(max(contentWidth, 260), visible.width - 120)
+        let contentWidth = CGFloat(max(itemCount, 1)) * SwitcherWindow.stripCellSize
+            + CGFloat(max(itemCount - 1, 0)) * SwitcherWindow.stripSpacing
+            + SwitcherWindow.stripHorizontalPadding * 2
+        let width = min(max(contentWidth, 280), visible.width - 120)
 
-        // vertical padding 12×2 + icon cell 76 + spacing 6 + caption 16
-        var height: CGFloat = 122
-        if searchActive { height += 44 }
-        if itemCount == 0 { height = 164 }
+        // 14pt outer padding + 82pt cell + 6pt spacing + 22pt caption.
+        var height: CGFloat = 138
+        if searchActive { height += 52 }
+        if itemCount == 0 { height = 176 }
 
         let x = visible.midX - width / 2
         let y = visible.midY - height / 2
@@ -595,7 +694,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let position = UserDefaults.standard.string(forKey: "panelPosition") ?? "center"
         let screen = targetScreen()
         let screenFrame = screen.visibleFrame
-        let panelWidth: CGFloat = 340
+        let panelWidth = SwitcherWindow.listWidth
 
         let x: CGFloat
         switch position {
@@ -611,17 +710,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.setFrame(NSRect(x: x, y: y, width: panelWidth, height: height), display: true)
     }
 
-    /// Apply theme setting to the panel.
-    /// "system" leans dark on purpose: the switcher is a transient HUD overlay
-    /// and the dark appearance reads best over arbitrary desktop content
-    /// (same choice as TabTab / Alfred / Raycast). Explicit "light" still works.
+    /// Apply the selected theme. Leaving `appearance` nil lets AppKit follow the
+    /// current system appearance and respond to changes while the app is running.
     private func applyTheme(to panel: NSPanel) {
         let theme = UserDefaults.standard.string(forKey: "appTheme") ?? "system"
         switch theme {
         case "light":
             panel.appearance = NSAppearance(named: .aqua)
-        default: // dark & system
+        case "dark":
             panel.appearance = NSAppearance(named: .darkAqua)
+        default:
+            panel.appearance = nil
         }
     }
 
@@ -650,12 +749,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let hostingController = NSHostingController(rootView: settingsView)
             let window = NSWindow(contentViewController: hostingController)
             window.title = "WindowSwitcher " + L10n.preferences
-            window.styleMask = [.titled, .closable]
-            window.setContentSize(NSSize(width: 620, height: 700))
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.setContentSize(NSSize(width: 800, height: 620))
+            window.minSize = NSSize(width: 760, height: 540)
+            window.collectionBehavior = [.moveToActiveSpace]
+            window.tabbingMode = .disallowed
+            window.titlebarSeparatorStyle = .line
             window.center()
             window.isReleasedWhenClosed = false
 
-            NotificationCenter.default.addObserver(
+            settingsWindowCloseObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.willCloseNotification,
                 object: window,
                 queue: .main
@@ -681,8 +784,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.activate(ignoringOtherApps: true)
 
-        // Don't let the pinned-apps search field grab first responder — the
-        // form would auto-scroll to it and hide the sections above
+        // Start with no field focused so the settings hierarchy remains stable.
         DispatchQueue.main.async { [weak self] in
             self?.settingsWindowController?.window?.makeFirstResponder(nil)
         }
@@ -694,10 +796,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSLog("[WS] Quitting...")
         NSApp.terminate(nil)
     }
-}
-
-// MARK: - Keyboard Shortcuts Extension
-
-extension KeyboardShortcuts.Name {
-    static let showSwitcher = Self("showSwitcher", default: .init(.tab, modifiers: [.option]))
 }

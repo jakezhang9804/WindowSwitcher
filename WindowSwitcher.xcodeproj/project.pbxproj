@@ -29,12 +29,17 @@
 		/* Models */
 		MDL001 /* WindowInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC013; };
 
-		/* Utils */
-		UTL002 /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC018; };
+			/* Utils */
+			UTL002 /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC018; };
+			UTL003 /* DisplayIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = SRC019; };
 
-		/* Frameworks */
-			FRM001 /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = PKG001; };
+			/* Frameworks */
 			FRM003 /* AppSwitcherKit in Frameworks */ = {isa = PBXBuildFile; productRef = PKG003; };
+			FRM004 /* PermissionFlow in Frameworks */ = {isa = PBXBuildFile; productRef = PKG004; };
+			FRM005 /* PermissionFlowScreenRecordingStatus in Frameworks */ = {isa = PBXBuildFile; productRef = PKG005; };
+
+			/* Resources */
+			RESBUILD001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = RES002; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -53,8 +58,9 @@
 		SRC012 /* HotkeyService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyService.swift; sourceTree = "<group>"; };
 		SRC013 /* WindowInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowInfo.swift; sourceTree = "<group>"; };
 		SRC016 /* UpdateService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateService.swift; sourceTree = "<group>"; };
-		SRC017 /* KeyablePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyablePanel.swift; sourceTree = "<group>"; };
-		SRC018 /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = L10n.swift; sourceTree = "<group>"; };
+			SRC017 /* KeyablePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyablePanel.swift; sourceTree = "<group>"; };
+			SRC018 /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = L10n.swift; sourceTree = "<group>"; };
+			SRC019 /* DisplayIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayIdentity.swift; sourceTree = "<group>"; };
 		
 		/* Resources */
 		RES001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -65,10 +71,11 @@
 		FRMPHASE /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
-			files = (
-				FRM001 /* KeyboardShortcuts in Frameworks */,
-				FRM003 /* AppSwitcherKit in Frameworks */,
-			);
+				files = (
+					FRM003 /* AppSwitcherKit in Frameworks */,
+					FRM004 /* PermissionFlow in Frameworks */,
+					FRM005 /* PermissionFlowScreenRecordingStatus in Frameworks */,
+				);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -160,11 +167,12 @@
 			path = Models;
 			sourceTree = "<group>";
 		};
-		GRP_UTILS /* Utils */ = {
-			isa = PBXGroup;
-			children = (
-				SRC018 /* L10n.swift */,
-			);
+			GRP_UTILS /* Utils */ = {
+				isa = PBXGroup;
+				children = (
+					SRC018 /* L10n.swift */,
+					SRC019 /* DisplayIdentity.swift */,
+				);
 			path = Utils;
 			sourceTree = "<group>";
 		};
@@ -192,10 +200,11 @@
 			dependencies = (
 			);
 			name = WindowSwitcher;
-			packageProductDependencies = (
-				PKG001 /* KeyboardShortcuts */,
-				PKG003 /* AppSwitcherKit */,
-			);
+				packageProductDependencies = (
+					PKG003 /* AppSwitcherKit */,
+					PKG004 /* PermissionFlow */,
+					PKG005 /* PermissionFlowScreenRecordingStatus */,
+				);
 			productName = WindowSwitcher;
 			productReference = PRD001 /* WindowSwitcher.app */;
 			productType = "com.apple.product-type.application";
@@ -224,10 +233,10 @@
 				Base,
 			);
 			mainGroup = ROOT;
-			packageReferences = (
-				PKGREF001 /* KeyboardShortcuts */,
-				PKGREF003 /* AppSwitcherKit */,
-			);
+				packageReferences = (
+					PKGREF003 /* AppSwitcherKit */,
+					PKGREF004 /* PermissionFlow */,
+				);
 			productRefGroup = GRP_PRODUCTS /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -241,8 +250,9 @@
 		RESPHASE /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (
-			);
+				files = (
+					RESBUILD001 /* Assets.xcassets in Resources */,
+				);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
@@ -263,9 +273,10 @@
 				SVC002 /* AccessibilityService.swift in Sources */,
 				SVC003 /* HotkeyService.swift in Sources */,
 				SVC004 /* UpdateService.swift in Sources */,
-				MDL001 /* WindowInfo.swift in Sources */,
-				UTL002 /* L10n.swift in Sources */,
-			);
+					MDL001 /* WindowInfo.swift in Sources */,
+					UTL002 /* L10n.swift in Sources */,
+					UTL003 /* DisplayIdentity.swift in Sources */,
+				);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
@@ -397,20 +408,16 @@
 				CODE_SIGN_ENTITLEMENTS = WindowSwitcher/Resources/WindowSwitcher.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = WindowSwitcher/Resources/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = WindowSwitcher;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
-				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 0.7.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.windowswitcher.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -426,20 +433,16 @@
 				CODE_SIGN_ENTITLEMENTS = WindowSwitcher/Resources/WindowSwitcher.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = WindowSwitcher/Resources/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = WindowSwitcher;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
-				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 0.7.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.windowswitcher.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -471,29 +474,34 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		PKGREF001 /* KeyboardShortcuts */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/sindresorhus/KeyboardShortcuts.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.0.0;
-			};
-		};
 			PKGREF003 /* AppSwitcherKit */ = {
 				isa = XCLocalSwiftPackageReference;
 				relativePath = Libraries/AppSwitcherKit;
 			};
+			PKGREF004 /* PermissionFlow */ = {
+				isa = XCRemoteSwiftPackageReference;
+				repositoryURL = "https://github.com/jaywcjlove/PermissionFlow.git";
+				requirement = {
+					kind = upToNextMajorVersion;
+					minimumVersion = 2.6.0;
+				};
+			};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		PKG001 /* KeyboardShortcuts */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = PKGREF001 /* KeyboardShortcuts */;
-			productName = KeyboardShortcuts;
-		};
 			PKG003 /* AppSwitcherKit */ = {
 				isa = XCSwiftPackageProductDependency;
 				productName = AppSwitcherKit;
+			};
+			PKG004 /* PermissionFlow */ = {
+				isa = XCSwiftPackageProductDependency;
+				package = PKGREF004 /* PermissionFlow */;
+				productName = PermissionFlow;
+			};
+			PKG005 /* PermissionFlowScreenRecordingStatus */ = {
+				isa = XCSwiftPackageProductDependency;
+				package = PKGREF004 /* PermissionFlow */;
+				productName = PermissionFlowScreenRecordingStatus;
 			};
 /* End XCSwiftPackageProductDependency section */
 	};

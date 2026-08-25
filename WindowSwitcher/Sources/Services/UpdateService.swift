@@ -14,7 +14,7 @@ final class UpdateService: ObservableObject {
     // MARK: - Configuration
 
     /// GitHub repository in "owner/repo" format
-    private let repoSlug = "yuzhang9804/WindowSwitcher"
+    private let repoSlug = "jakezhang9804/WindowSwitcher"
 
     /// UserDefaults keys
     private let lastCheckKey = "UpdateService.lastCheckDate"
@@ -32,6 +32,8 @@ final class UpdateService: ObservableObject {
     @Published var isUpdateAvailable: Bool = false
     @Published var isChecking: Bool = false
     @Published var lastError: String?
+    @Published private(set) var hasCompletedCheck = false
+    @Published private(set) var hasSkippedLatestVersion = false
 
     // MARK: - Private
 
@@ -77,27 +79,36 @@ final class UpdateService: ObservableObject {
         if let version = latestVersion {
             UserDefaults.standard.set(version, forKey: skippedVersionKey)
             isUpdateAvailable = false
+            hasSkippedLatestVersion = true
         }
     }
 
     /// Open the release page in the default browser
     func openReleasePage() {
         if let url = releaseURL, isTrustedHost(url) {
-            NSWorkspace.shared.open(url)
+            if !NSWorkspace.shared.open(url) { lastError = L10n.couldNotOpenUpdateLink }
+        } else {
+            lastError = L10n.invalidUpdateLink
         }
     }
 
     /// Open the download URL (DMG/ZIP) in the default browser
     func openDownload() {
         if let url = downloadURL ?? releaseURL, isTrustedHost(url) {
-            NSWorkspace.shared.open(url)
+            if !NSWorkspace.shared.open(url) { lastError = L10n.couldNotOpenUpdateLink }
+        } else {
+            lastError = L10n.invalidUpdateLink
         }
     }
 
     /// Defense-in-depth: only ever open URLs on GitHub's own hosts, even though
     /// they come from the hardcoded repo's API response
     private func isTrustedHost(_ url: URL) -> Bool {
-        guard let host = url.host?.lowercased() else { return false }
+        guard url.scheme?.lowercased() == "https",
+              url.user == nil,
+              url.password == nil,
+              url.port == nil || url.port == 443,
+              let host = url.host?.lowercased() else { return false }
         return host == "github.com"
             || host.hasSuffix(".github.com")
             || host.hasSuffix(".githubusercontent.com")
@@ -132,14 +143,17 @@ final class UpdateService: ObservableObject {
 
             latestVersion = remoteVersion
             releaseURL = URL(string: release.htmlURL)
-            releaseNotes = release.body
-            downloadURL = release.assets.first(where: {
-                $0.name.hasSuffix(".dmg") || $0.name.hasSuffix(".zip")
-            }).flatMap { URL(string: $0.browserDownloadURL) }
+            releaseNotes = release.body.map { String($0.prefix(1_200)) }
+            let dmg = release.assets.first { $0.name.lowercased().hasSuffix(".dmg") }
+            let zip = release.assets.first { $0.name.lowercased().hasSuffix(".zip") }
+            downloadURL = (dmg ?? zip).flatMap { URL(string: $0.browserDownloadURL) }
+            hasCompletedCheck = true
 
             // Compare versions
             let skippedVersion = UserDefaults.standard.string(forKey: skippedVersionKey)
-            if isVersion(remoteVersion, newerThan: currentVersion) && remoteVersion != skippedVersion {
+            let isNewer = isVersion(remoteVersion, newerThan: currentVersion)
+            hasSkippedLatestVersion = isNewer && remoteVersion == skippedVersion
+            if isNewer && !hasSkippedLatestVersion {
                 isUpdateAvailable = true
                 NSLog("[UpdateService] New version available: \(remoteVersion) (current: \(currentVersion))")
             } else {
@@ -148,6 +162,7 @@ final class UpdateService: ObservableObject {
             }
         } catch {
             lastError = error.localizedDescription
+            hasCompletedCheck = false
             NSLog("[UpdateService] Check failed: \(error.localizedDescription)")
         }
     }
@@ -175,6 +190,10 @@ final class UpdateService: ObservableObject {
 
         guard httpResponse.statusCode == 200 else {
             throw UpdateError.httpError(httpResponse.statusCode)
+        }
+
+        guard data.count <= 2_000_000 else {
+            throw UpdateError.invalidResponse
         }
 
         let decoder = JSONDecoder()
@@ -234,10 +253,10 @@ private enum UpdateError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidURL: return "Invalid GitHub API URL"
-        case .invalidResponse: return "Invalid server response"
-        case .noReleases: return "No releases found"
-        case .httpError(let code): return "HTTP error \(code)"
+        case .invalidURL: return L10n.invalidUpdateURL
+        case .invalidResponse: return L10n.invalidServerResponse
+        case .noReleases: return L10n.noReleasesFound
+        case .httpError(let code): return L10n.updateHTTPError(code)
         }
     }
 }

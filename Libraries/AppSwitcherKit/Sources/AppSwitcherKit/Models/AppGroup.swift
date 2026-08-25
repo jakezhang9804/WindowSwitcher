@@ -7,12 +7,25 @@ public struct AppGroupWindowFrame: Hashable, Codable {
     public var y: Double
     public var width: Double
     public var height: Double
+    /// Normalized origin within the bound display's available travel range.
+    /// Optional so frames saved by earlier versions continue to decode.
+    public var relativeX: Double?
+    public var relativeY: Double?
 
-    public init(x: Double, y: Double, width: Double, height: Double) {
+    public init(
+        x: Double,
+        y: Double,
+        width: Double,
+        height: Double,
+        relativeX: Double? = nil,
+        relativeY: Double? = nil
+    ) {
         self.x = x
         self.y = y
         self.width = width
         self.height = height
+        self.relativeX = relativeX
+        self.relativeY = relativeY
     }
 }
 
@@ -28,8 +41,10 @@ public struct AppGroup: Identifiable, Hashable, Codable {
     /// Member applications, in activation order — the first member ends up focused
     public var bundleIDs: [String]
     /// Index into `NSScreen.screens` whose screen the group's windows are moved
-    /// to when a member has no captured frame
+    /// to when a member has no captured frame. Retained as a legacy fallback.
     public var screenIndex: Int
+    /// Stable CoreGraphics display UUID. New saves prefer this over screenIndex.
+    public var displayID: String?
     /// Captured window frames per member (keyed by bundle ID). Empty until the
     /// user snapshots the current layout.
     public var frames: [String: AppGroupWindowFrame]
@@ -39,12 +54,14 @@ public struct AppGroup: Identifiable, Hashable, Codable {
         name: String,
         bundleIDs: [String],
         screenIndex: Int = 0,
+        displayID: String? = nil,
         frames: [String: AppGroupWindowFrame] = [:]
     ) {
         self.id = id
         self.name = name
         self.bundleIDs = bundleIDs
         self.screenIndex = screenIndex
+        self.displayID = displayID
         self.frames = frames
     }
 
@@ -55,6 +72,7 @@ public struct AppGroup: Identifiable, Hashable, Codable {
         self.name = try container.decode(String.self, forKey: .name)
         self.bundleIDs = try container.decode([String].self, forKey: .bundleIDs)
         self.screenIndex = try container.decodeIfPresent(Int.self, forKey: .screenIndex) ?? 0
+        self.displayID = try container.decodeIfPresent(String.self, forKey: .displayID)
         self.frames = try container.decodeIfPresent([String: AppGroupWindowFrame].self, forKey: .frames) ?? [:]
     }
 
@@ -66,19 +84,32 @@ public enum AppGroupRules {
     /// A group is storable when it has a non-empty name and at least one member.
     /// Frames for bundle IDs that are no longer members are dropped.
     public static func sanitized(_ groups: [AppGroup]) -> [AppGroup] {
-        groups.compactMap { group in
+        var globallyAssignedMembers = Set<String>()
+        var seenGroupIDs = Set<UUID>()
+        return groups.compactMap { group in
+            guard seenGroupIDs.insert(group.id).inserted else { return nil }
             let name = group.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            let members = group.bundleIDs.filter { !$0.isEmpty }
+            let members = group.bundleIDs
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
             guard !name.isEmpty, !members.isEmpty else { return nil }
             var sanitized = group
             sanitized.name = name
-            // De-duplicate members, keeping first occurrence order
+            // Bundle IDs are case-insensitive. De-duplicate while preserving the
+            // first spelling and activation order reported by Launch Services.
             var seen = Set<String>()
-            sanitized.bundleIDs = members.filter { seen.insert($0).inserted }
+            sanitized.bundleIDs = members.filter { member in
+                let key = member.lowercased()
+                return seen.insert(key).inserted && globallyAssignedMembers.insert(key).inserted
+            }
+            guard !sanitized.bundleIDs.isEmpty else { return nil }
             sanitized.screenIndex = max(0, group.screenIndex)
-            // Keep only frames whose bundle ID is still a member
-            let memberSet = Set(sanitized.bundleIDs)
-            sanitized.frames = group.frames.filter { memberSet.contains($0.key) }
+            let displayID = group.displayID?.trimmingCharacters(in: .whitespacesAndNewlines)
+            sanitized.displayID = displayID?.isEmpty == false ? displayID : nil
+            // Keep frames case-insensitively too; otherwise a casing change in a
+            // bundle identifier silently discards a recorded layout on save.
+            let memberSet = Set(sanitized.bundleIDs.map { $0.lowercased() })
+            sanitized.frames = group.frames.filter { memberSet.contains($0.key.lowercased()) }
             return sanitized
         }
     }

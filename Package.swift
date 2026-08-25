@@ -10,7 +10,6 @@ let package = Package(
         .executable(name: "WindowSwitcher", targets: ["WindowSwitcher"])
     ],
     dependencies: [
-        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts.git", from: "2.0.0"),
         .package(url: "https://github.com/jaywcjlove/PermissionFlow.git", from: "2.6.0"),
         .package(path: "Libraries/AppSwitcherKit")
     ],
@@ -18,21 +17,11 @@ let package = Package(
         .executableTarget(
             name: "WindowSwitcher",
             dependencies: [
-                "KeyboardShortcuts",
                 "AppSwitcherKit",
                 .product(name: "PermissionFlow", package: "PermissionFlow"),
                 .product(name: "PermissionFlowScreenRecordingStatus", package: "PermissionFlow")
             ],
-            path: "WindowSwitcher/Sources",
-            linkerSettings: [
-                // SkyLight hosts _SLPSSetFrontProcessWithOptions /
-                // SLPSPostEventRecordTo — needed to front windows on other
-                // Spaces (no public API can switch Space to a target window)
-                .unsafeFlags([
-                    "-F", "/System/Library/PrivateFrameworks",
-                    "-framework", "SkyLight"
-                ])
-            ]
+            path: "WindowSwitcher/Sources"
         )
     ]
 )

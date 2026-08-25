@@ -5,6 +5,7 @@ public final class UserDefaultsSwitcherSettingsStore: SwitcherSettingsStoring {
 
     private let defaults: UserDefaults
     private let storageKey: String
+    private var backupStorageKey: String { "\(storageKey).lastKnownGood" }
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
@@ -23,15 +24,32 @@ public final class UserDefaultsSwitcherSettingsStore: SwitcherSettingsStoring {
 
         do {
             let decoded = try decoder.decode(SwitcherSettings.self, from: data)
-            return SwitcherSettings(appGroups: AppGroupRules.sanitized(decoded.appGroups))
+            return sanitized(decoded)
         } catch {
-            return SwitcherSettings()
+            guard let backupData = defaults.data(forKey: backupStorageKey),
+                  let backup = try? decoder.decode(SwitcherSettings.self, from: backupData) else {
+                return SwitcherSettings()
+            }
+            return sanitized(backup)
         }
     }
 
     public func save(_ settings: SwitcherSettings) throws {
-        let sanitized = SwitcherSettings(appGroups: AppGroupRules.sanitized(settings.appGroups))
+        let sanitized = SwitcherSettings(
+            allowedBundleIDs: settings.allowedBundleIDs,
+            appBindings: settings.appBindings,
+            appGroups: AppGroupRules.sanitized(settings.appGroups)
+        )
         let data = try encoder.encode(sanitized)
         defaults.set(data, forKey: storageKey)
+        defaults.set(data, forKey: backupStorageKey)
+    }
+
+    private func sanitized(_ settings: SwitcherSettings) -> SwitcherSettings {
+        SwitcherSettings(
+            allowedBundleIDs: settings.allowedBundleIDs,
+            appBindings: settings.appBindings,
+            appGroups: AppGroupRules.sanitized(settings.appGroups)
+        )
     }
 }

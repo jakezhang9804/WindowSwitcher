@@ -22,7 +22,8 @@ DerivedData
 .build/
 .swiftpm/
 Packages/
-Package.resolved
+artifacts/
+design/
 
 # CocoaPods
 Pods/

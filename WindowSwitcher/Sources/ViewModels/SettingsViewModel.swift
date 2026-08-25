@@ -2,7 +2,7 @@ import SwiftUI
 import ServiceManagement
 
 @MainActor
-class SettingsViewModel: ObservableObject {
+final class SettingsViewModel: ObservableObject {
     @Published var launchAtLogin: Bool = false {
         didSet {
             // Don't react to programmatic syncs (initial load / failure revert)

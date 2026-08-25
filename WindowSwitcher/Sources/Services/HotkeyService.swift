@@ -1,17 +1,16 @@
 import AppKit
-import KeyboardShortcuts
 
 /// Hotkey service that implements proper Option+Tab window switching behavior:
 ///
 /// **Normal mode (panel shown, search bar inactive by default):**
 /// - Option+Tab keyDown → show switcher panel (first press)
 /// - Option+Tab again → cycle next (each discrete press)
-/// - Long-press Option+Tab → auto-repeat cycling via Timer
+/// - Long-press Option+Tab → cycle using the system key-repeat events
 /// - Option+Tab keyUp → stop auto-repeat Timer
 /// - Option+Shift+Tab → cycle previous
 /// - Number keys 1-9 → jump to Nth item and confirm (when search inactive)
 /// - Option released → confirm selection and dismiss
-/// - Enter → activate search bar (when search inactive) or confirm selection (when search active)
+/// - Enter → activate search; the focused field submits after IME composition is committed
 /// - Escape → deactivate search (if active) or dismiss panel
 ///
 /// Search bar is visible but **inactive** by default. User presses Enter to
@@ -50,13 +49,6 @@ final class HotkeyService {
     /// Local event monitor for keyDown
     private var localKeyMonitor: Any?
 
-    /// Timer for simulating long-press Tab repeat
-    private var tabRepeatTimer: Timer?
-    /// Initial delay before repeat starts (matches macOS key repeat delay)
-    private let repeatInitialDelay: TimeInterval = 0.35
-    /// Interval between repeats (matches macOS key repeat rate)
-    private let repeatInterval: TimeInterval = 0.07
-
     /// Fallback poll timer that watches the hardware modifier state while the
     /// switcher is shown. flagsChanged delivery via NSEvent monitors is not
     /// reliable: global monitors go silent under secure event input, and a
@@ -72,7 +64,10 @@ final class HotkeyService {
     private var eventTap: CFMachPort?
     private var tapRunLoopSource: CFRunLoopSource?
 
-    var isEventTapActive: Bool { eventTap != nil }
+    var isEventTapActive: Bool {
+        guard let eventTap else { return false }
+        return CFMachPortIsValid(eventTap) && CGEvent.tapIsEnabled(tap: eventTap)
+    }
 
     /// Track whether the switcher is currently shown
     private(set) var isSwitcherActive = false
@@ -96,13 +91,10 @@ final class HotkeyService {
     }
 
     /// The modifier that must be held to drive the switcher and whose release
-    /// confirms the selection
+    /// confirms the selection. Window switching already requires Accessibility,
+    /// so CGEventTap is the single hotkey source instead of a duplicate fallback.
     private var hotkeyModifiers: NSEvent.ModifierFlags {
-        if isEventTapActive {
-            return useCommandTab ? .command : .option
-        }
-        let modifiers = KeyboardShortcuts.getShortcut(for: .showSwitcher)?.modifiers ?? .option
-        return modifiers.intersection(.deviceIndependentFlagsMask)
+        useCommandTab ? .command : .option
     }
 
     /// The modifiers currently held according to the event system's session
@@ -122,32 +114,6 @@ final class HotkeyService {
 
     func onShowSwitcher(_ handler: @escaping () -> Void) {
         self.showHandler = handler
-
-        // Carbon hotkey fallback for when the event tap can't be created
-        // (e.g. accessibility permission missing). The tap consumes the
-        // trigger combo before Carbon sees it, so this stays quiet otherwise.
-        KeyboardShortcuts.onKeyDown(for: .showSwitcher) { [weak self] in
-            guard let self = self, !self.isEventTapActive else { return }
-            NSLog("[WS][Hotkey] Option+Tab keyDown (active=\(self.isSwitcherActive))")
-            if self.isSwitcherActive {
-                // Panel already visible → cycle to next item immediately
-                self.tabHandler?()
-                // Start repeat timer for long-press
-                self.startTabRepeatTimer()
-            } else {
-                // Panel not visible → show it
-                self.showHandler?()
-            }
-        }
-
-        // When Tab is released → stop the repeat timer
-        KeyboardShortcuts.onKeyUp(for: .showSwitcher) { [weak self] in
-            guard let self = self, !self.isEventTapActive else { return }
-            NSLog("[WS][Hotkey] Option+Tab keyUp — stopping repeat timer")
-            self.stopTabRepeatTimer()
-        }
-
-        NSLog("[WS][Hotkey] Registered KeyboardShortcuts fallback for Option+Tab")
     }
 
     func onConfirmSelection(_ handler: @escaping () -> Void) {
@@ -192,54 +158,29 @@ final class HotkeyService {
         // and that signal is more reliable than the session flags state
         isConfirmArmed = isConfirmArmed
             || (!modifiers.isEmpty && Self.currentHeldModifiers().contains(modifiers))
-        startMonitors()
-        startModifierPollTimer()
-        NSLog("[WS][Hotkey] switcherDidShow — monitors started (confirmArmed=\(isConfirmArmed), tap=\(isEventTapActive))")
+        if isEventTapActive {
+            stopMonitors()
+            stopModifierPollTimer()
+        } else {
+            startMonitors()
+            startModifierPollTimer()
+        }
+        NSLog("[WS][Hotkey] switcherDidShow — fallback=\(!isEventTapActive) (confirmArmed=\(isConfirmArmed), tap=\(isEventTapActive))")
     }
 
     /// Called when the switcher panel is hidden
     func switcherDidHide() {
         isSwitcherActive = false
         isConfirmArmed = false
-        stopTabRepeatTimer()
         stopModifierPollTimer()
         stopMonitors()
         NSLog("[WS][Hotkey] switcherDidHide — monitors stopped")
     }
 
-    func resetToDefaults() {
-        KeyboardShortcuts.reset(.showSwitcher)
-    }
-
-    // MARK: - Tab Repeat Timer
-
-    private func startTabRepeatTimer() {
-        stopTabRepeatTimer()
-
-        // After initial delay, start repeating
-        tabRepeatTimer = Timer.scheduledTimer(withTimeInterval: repeatInitialDelay, repeats: false) { [weak self] _ in
-            guard let self = self, self.isSwitcherActive else { return }
-            // Switch to fast repeat
-            self.tabRepeatTimer = Timer.scheduledTimer(withTimeInterval: self.repeatInterval, repeats: true) { [weak self] _ in
-                guard let self = self, self.isSwitcherActive else {
-                    self?.stopTabRepeatTimer()
-                    return
-                }
-                NSLog("[WS][Hotkey] Tab repeat tick")
-                self.tabHandler?()
-            }
-        }
-    }
-
-    private func stopTabRepeatTimer() {
-        tabRepeatTimer?.invalidate()
-        tabRepeatTimer = nil
-    }
-
     // MARK: - Event Tap (primary input path)
 
-    /// Install the event tap. Requires accessibility trust; falls back to the
-    /// Carbon hotkey + NSEvent monitors when creation fails.
+    /// Install the event tap. Accessibility trust is required both for the tap
+    /// and for WindowSwitcher to enumerate and activate windows.
     func startEventTap() {
         guard eventTap == nil else { return }
 
@@ -258,7 +199,7 @@ final class HotkeyService {
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
-            NSLog("[WS][Hotkey] Event tap creation FAILED — using Carbon hotkey fallback")
+            NSLog("[WS][Hotkey] Event tap creation FAILED — Accessibility permission is required")
             return
         }
 
@@ -289,7 +230,15 @@ final class HotkeyService {
         // The system disables a tap whose callback stalls — re-enable and pass
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
-            NSLog("[WS][Hotkey] Event tap re-enabled after system disable")
+            if !isEventTapActive {
+                DispatchQueue.main.async { [weak self] in
+                    self?.stopEventTap()
+                    self?.startEventTap()
+                }
+                NSLog("[WS][Hotkey] Event tap invalid after disable — rebuilding")
+            } else {
+                NSLog("[WS][Hotkey] Event tap re-enabled after system disable")
+            }
             return Unmanaged.passUnretained(event)
         }
 
@@ -431,9 +380,6 @@ final class HotkeyService {
         isConfirmArmed = false
         hasConfirmedThisSession = true
 
-        // Stop any repeat timer
-        stopTabRepeatTimer()
-
         let searchActive = isSearchActiveProvider?() ?? false
 
         // Only auto-confirm if search is NOT active
@@ -469,11 +415,9 @@ final class HotkeyService {
         // Enter (keyCode 36)
         if keyCode == 36 {
             if searchActive {
-                // Search is active → confirm current selection
-                NSLog("[WS][Hotkey] Enter pressed — confirming selection (search active)")
-                DispatchQueue.main.async { [weak self] in
-                    self?.confirmHandler?()
-                }
+                // Let the focused TextField and input method handle Return. Its
+                // onSubmit callback confirms only after marked text is committed.
+                return false
             } else {
                 // Search is not active → activate search bar
                 NSLog("[WS][Hotkey] Enter pressed — activating search")
@@ -539,8 +483,6 @@ final class HotkeyService {
         }
 
         // Tab (keyCode 48) — cycle through results in both modes.
-        // (When the recorded hotkey matches, Carbon consumes the event before we
-        // see it, so this handles Shift+Tab and Tab presses the hotkey doesn't cover.)
         if keyCode == 48 {
             if flags.contains(.shift) {
                 NSLog("[WS][Hotkey] Shift+Tab — previous")
@@ -565,6 +507,14 @@ final class HotkeyService {
                 if let chars = characters, !chars.isEmpty {
                     // Consume printable characters so they don't go to TextField
                     NSLog("[WS][Hotkey] Consuming key '\(chars)' (search inactive)")
+                    return true
+                }
+
+                // CGEvent tap callbacks do not always bridge characters. The
+                // ANSI printable key range still must not leak into whatever
+                // app is behind a switcher opened from the menu bar.
+                if keyCode <= 50 {
+                    NSLog("[WS][Hotkey] Consuming printable keyCode=\(keyCode) (search inactive)")
                     return true
                 }
             }

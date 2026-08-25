@@ -20,8 +20,10 @@ enum SwitcherLayout {
 ///   detail panel, TabTab-style); ← / Esc backs out; ↑/↓ move within it.
 struct SwitcherWindow: View {
     @ObservedObject var viewModel: SwitcherViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     var layout: SwitcherLayout = .list
-    let onDismiss: () -> Void
+    let onConfirm: () -> Void
     let onOpenSettings: () -> Void
     let onItemCountChange: (Int) -> Void
 
@@ -32,37 +34,53 @@ struct SwitcherWindow: View {
     /// which would otherwise silently override the default "previous window" selection.
     @State private var initialMouseLocation: CGPoint = NSEvent.mouseLocation
     @State private var mouseHasMoved = false
+    @State private var screenRecordingGranted = CGPreflightScreenCaptureAccess()
 
     init(
         viewModel: SwitcherViewModel,
         layout: SwitcherLayout = .list,
-        onDismiss: @escaping () -> Void,
+        onConfirm: @escaping () -> Void,
         onOpenSettings: @escaping () -> Void,
         onItemCountChange: @escaping (Int) -> Void = { _ in }
     ) {
         self.viewModel = viewModel
         self.layout = layout
-        self.onDismiss = onDismiss
+        self.onConfirm = onConfirm
         self.onOpenSettings = onOpenSettings
         self.onItemCountChange = onItemCountChange
     }
 
-    // Semantic system colors — they adapt to the panel appearance automatically
-    // and render with vibrancy inside the NSVisualEffectView.
-
+    // Keep translucent color stacking intentionally shallow: one material at the
+    // window level, one neutral surface for controls/selections, and accent color
+    // only for focus. This avoids muddy overlays in both light and dark themes.
     private var secondaryText: Color { .secondary }
     private var tertiaryText: Color { Color(nsColor: .tertiaryLabelColor) }
     private var subtleText: Color { Color(nsColor: .quaternaryLabelColor) }
-    private var fillBg: Color { Color.primary.opacity(0.08) }
+    private var quietSurface: Color {
+        Color.primary.opacity(colorScheme == .dark ? 0.075 : 0.05)
+    }
+    private var raisedSurface: Color {
+        Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.075)
+    }
+    private var selectedSurface: Color {
+        Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.085)
+    }
+    private var hairline: Color {
+        Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.11)
+    }
 
     // MARK: - List sizing
 
     /// The vertical list shows at most this many rows; beyond it it scrolls.
     /// Keep in sync with `AppDelegate.calculatePanelHeight`.
     static let listMaxVisibleRows = 9
-    /// Row content (28pt icon) + vertical padding 7×2
-    static let listRowHeight: CGFloat = 42
+    static let listWidth: CGFloat = 360
+    /// Row content (30pt icon) + vertical padding 8×2
+    static let listRowHeight: CGFloat = 46
     static let listRowSpacing: CGFloat = 2
+    static let stripCellSize: CGFloat = 82
+    static let stripSpacing: CGFloat = 4
+    static let stripHorizontalPadding: CGFloat = 16
 
     /// Height of a results list capped at `listMaxVisibleRows`.
     static func listHeight(for count: Int) -> CGFloat {
@@ -88,8 +106,12 @@ struct SwitcherWindow: View {
             }
         }
         // Tab cycles the top-level list (with key-repeat)
-        .onKeyPress(.tab) {
-            viewModel.selectNext()
+        .onKeyPress(keys: [.tab]) { press in
+            if press.modifiers.contains(.shift) {
+                viewModel.selectPrevious()
+            } else {
+                viewModel.selectNext()
+            }
             return .handled
         }
         .onKeyPress(.upArrow) {
@@ -128,6 +150,9 @@ struct SwitcherWindow: View {
             }
             onItemCountChange(viewModel.displayedItems.count)
         }
+        .onAppear {
+            screenRecordingGranted = CGPreflightScreenCaptureAccess()
+        }
     }
 
     // MARK: - List Layout (left/right edge panel)
@@ -143,7 +168,7 @@ struct SwitcherWindow: View {
                 SwitcherResultsList(
                     items: items,
                     selectedIndex: $viewModel.selectedIndex,
-                    onSelect: { activateItem($0) },
+                    onSelect: { index, item in selectOrConfirm(item, at: index) },
                     onHover: { hoverSelect($0) }
                 )
                 // Cap at 9 rows; extra rows scroll inside this frame.
@@ -152,10 +177,14 @@ struct SwitcherWindow: View {
 
             bottomBar
         }
-        .frame(width: 340)
+        .frame(width: Self.listWidth)
         .fixedSize(horizontal: false, vertical: true)
         .background(Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(hairline, lineWidth: 0.75)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
     // MARK: - Strip Layout (native Cmd+Tab style, centered)
@@ -172,43 +201,77 @@ struct SwitcherWindow: View {
             } else {
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 2) {
+                        HStack(spacing: Self.stripSpacing) {
                             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                                 stripIcon(item: item, isSelected: index == viewModel.selectedIndex, index: index)
                                     .id(index)
-                                    .onTapGesture { activateItem(item) }
+                                    .onTapGesture { selectOrConfirm(item, at: index) }
                                     .onHover { if $0 { hoverSelect(index) } }
                             }
                         }
-                        .padding(.horizontal, 14)
+                        .padding(.horizontal, Self.stripHorizontalPadding)
                     }
                     .onChange(of: viewModel.selectedIndex) { _, newValue in
-                        withAnimation(.easeOut(duration: 0.1)) {
+                        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.1)) {
                             proxy.scrollTo(newValue, anchor: .center)
                         }
                     }
                 }
 
-                // Selected item caption + drill-in hint
-                HStack(spacing: 6) {
+                // Selection detail stays visually anchored while the icons move.
+                HStack(spacing: 7) {
+                    Capsule()
+                        .fill(Color.accentColor)
+                        .frame(width: 3, height: 13)
+
                     Text(selectedCaption)
-                        .font(.system(size: 12))
-                        .foregroundColor(secondaryText)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.primary)
                         .lineLimit(1)
-                    if viewModel.expandedWindows.count >= 2 {
-                        Label(L10n.drillHint, systemImage: "arrow.right")
-                            .labelStyle(.titleAndIcon)
+
+                    if let selected = viewModel.selectedItem, selected.windows.count >= 2 {
+                        Text("·")
+                            .foregroundStyle(subtleText)
+
+                        Text(L10n.windowCountText(selected.windows.count))
                             .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(tertiaryText)
+                            .foregroundStyle(secondaryText)
+
+                        Spacer(minLength: 4)
+
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text(L10n.drillHint)
+                        }
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(tertiaryText)
                     }
+
+                    Spacer(minLength: 0)
+
+                    Button(action: { onOpenSettings() }) {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(tertiaryText)
+                            .frame(width: 24, height: 22)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(L10n.settings)
+                    .accessibilityLabel(L10n.settings)
                 }
-                .padding(.horizontal, 16)
-                .frame(height: 16)
+                .padding(.horizontal, 18)
+                .frame(height: 22)
             }
         }
-        .padding(.vertical, 12)
+        .padding(.vertical, 14)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.clear)
+        .overlay(
+            RoundedRectangle(cornerRadius: 22)
+                .strokeBorder(hairline, lineWidth: 0.75)
+        )
     }
 
     // MARK: - Secondary (per-app windows) drill-down
@@ -217,9 +280,16 @@ struct SwitcherWindow: View {
         VStack(spacing: 0) {
             // Back header: ‹ App name · N windows
             HStack(spacing: 8) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(secondaryText)
+                Button(action: { viewModel.exitSecondary() }) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(secondaryText)
+                        .frame(width: 24, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(L10n.back)
+
                 Text(viewModel.selectedItem?.displayName ?? "")
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
@@ -230,79 +300,93 @@ struct SwitcherWindow: View {
             }
             .padding(.horizontal, 14)
             .frame(height: 40)
-            .contentShape(Rectangle())
-            .onTapGesture { viewModel.exitSecondary() }
 
             SwitcherResultsList(
                 items: secondaryItems,
                 selectedIndex: $viewModel.secondaryIndex,
-                onSelect: { item in
-                    if case .window(let w) = item { activateWindow(w) }
+                onSelect: { index, item in
+                    guard case .window = item else { return }
+                    viewModel.secondaryIndex = index
+                    onConfirm()
                 },
                 onHover: { viewModel.secondaryIndex = $0 }
             )
             .frame(height: Self.listHeight(for: secondaryItems.count))
         }
         .padding(.vertical, 6)
-        .frame(width: 340)
+        .frame(width: Self.listWidth)
         .fixedSize(horizontal: false, vertical: true)
         .background(Color.clear)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(hairline, lineWidth: 0.75)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
     private func stripIcon(item: SwitcherItem, isSelected: Bool, index: Int) -> some View {
         ZStack(alignment: .topTrailing) {
-            ZStack(alignment: .bottom) {
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(isSelected ? Color.primary.opacity(0.18) : Color.clear)
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .fill(isSelected ? selectedSurface : Color.clear)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 17, style: .continuous)
+                        .strokeBorder(isSelected ? Color.accentColor.opacity(0.42) : Color.clear, lineWidth: 1)
+                )
 
+            Group {
                 if let groupIcons = item.groupIcons {
-                    GroupStackIcon(icons: groupIcons, size: 60)
+                    GroupStackIcon(icons: groupIcons, size: 62)
                 } else if let icon = item.icon {
                     Image(nsImage: icon)
                         .resizable()
                         .interpolation(.high)
                         .aspectRatio(contentMode: .fit)
-                        .frame(width: 60, height: 60)
+                        .frame(width: 62, height: 62)
                 } else {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(fillBg)
-                        .frame(width: 60, height: 60)
+                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                        .fill(quietSurface)
+                        .frame(width: 62, height: 62)
                         .overlay(
                             Image(systemName: "app")
-                                .font(.system(size: 26))
+                                .font(.system(size: 26, weight: .light))
                                 .foregroundColor(tertiaryText)
                         )
                 }
-
-                // Multi-window apps show a small stacked-count pill
-                if item.windows.count >= 2 {
-                    Text("\(item.windows.count)")
-                        .font(.system(size: 9, weight: .bold, design: .rounded))
-                        .foregroundColor(.primary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(fillBg))
-                        .offset(y: 2)
-                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
 
-            // Quick-select number badge (keys 1-9)
+            // The center layout has exactly one badge, anchored to top-right.
             if index < 9 {
                 Text("\(index + 1)")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundColor(isSelected ? .primary : tertiaryText)
-                    .frame(width: 16, height: 16)
-                    .background(Circle().fill(isSelected ? Color.primary.opacity(0.2) : fillBg))
-                    .padding(4)
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundColor(isSelected ? .white : secondaryText)
+                    .frame(width: 18, height: 18)
+                    .background(
+                        Circle()
+                            .fill(isSelected ? Color.accentColor : raisedSurface)
+                            .overlay(Circle().strokeBorder(hairline, lineWidth: isSelected ? 0 : 0.75))
+                    )
+                    .padding(.top, 3)
+                    .padding(.trailing, 3)
             }
         }
-        .frame(width: 76, height: 76)
+        .frame(width: Self.stripCellSize, height: Self.stripCellSize)
         .contentShape(Rectangle())
+        .scaleEffect(isSelected && !reduceMotion ? 1.025 : 1)
+        .shadow(color: isSelected ? Color.black.opacity(colorScheme == .dark ? 0.2 : 0.12) : .clear, radius: 7, y: 2)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: isSelected)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(item.displayName)
+        .accessibilityValue(item.subtitle ?? L10n.windowCountText(item.windows.count))
+        .accessibilityHint(index < 9 ? L10n.quickSelectHint(index + 1) : L10n.activateItemHint)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private var selectedCaption: String {
         guard let item = viewModel.selectedItem else { return " " }
+        if item.windows.count >= 2 {
+            return item.displayName
+        }
         if let subtitle = item.subtitle, !subtitle.isEmpty, subtitle != item.displayName {
             return "\(item.displayName) — \(subtitle)"
         }
@@ -341,6 +425,7 @@ struct SwitcherWindow: View {
                         .font(.system(size: 13))
                         .foregroundColor(.primary)
                         .focused($isTextFieldFocused)
+                        .onSubmit { onConfirm() }
                 }
 
                 if !viewModel.searchText.isEmpty {
@@ -351,18 +436,29 @@ struct SwitcherWindow: View {
                     }
                     .buttonStyle(.plain)
                     .transition(.opacity)
+                    .help(L10n.clearSearch)
+                    .accessibilityLabel(L10n.clearSearch)
                 }
             } else {
                 Text(L10n.searchInactivePlaceholder)
                     .font(.system(size: 13))
                     .foregroundColor(tertiaryText)
                 Spacer()
+                Text("↩")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(secondaryText)
+                    .frame(width: 22, height: 18)
+                    .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(raisedSurface))
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(fillBg)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(viewModel.isSearchActive ? selectedSurface : quietSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(viewModel.isSearchActive ? Color.accentColor.opacity(0.42) : hairline, lineWidth: 0.75)
+        )
         .padding(.horizontal, 10)
         .padding(.top, 10)
         .padding(.bottom, 4)
@@ -370,59 +466,91 @@ struct SwitcherWindow: View {
         .onTapGesture {
             if !viewModel.isSearchActive { viewModel.isSearchActive = true }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(L10n.searchWindowsAndApps)
     }
 
     // MARK: - Empty State
 
     private var emptyState: some View {
         VStack(spacing: 10) {
-            Image(systemName: viewModel.searchText.isEmpty ? "rectangle.stack" : "magnifyingglass")
+            Image(systemName: emptyStateSymbol)
                 .font(.system(size: 28, weight: .light))
-                .foregroundColor(tertiaryText)
+                .foregroundColor(isPermissionEmptyState ? .orange : tertiaryText)
 
-            Text(viewModel.searchText.isEmpty ? L10n.noWindows : L10n.noResults)
+            Text(emptyStateTitle)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(secondaryText)
+
+            Text(emptyStateHint)
+                .font(.system(size: 11))
+                .foregroundColor(tertiaryText)
+                .multilineTextAlignment(.center)
+
+            if isPermissionEmptyState {
+                Button(L10n.openSettings) { onOpenSettings() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
         }
         .frame(maxWidth: .infinity)
         .frame(minHeight: 80)
         .padding(.vertical, 30)
     }
 
+    private var isPermissionEmptyState: Bool {
+        viewModel.searchText.isEmpty && !screenRecordingGranted
+    }
+
+    private var emptyStateSymbol: String {
+        if isPermissionEmptyState { return "exclamationmark.triangle" }
+        return viewModel.searchText.isEmpty ? "rectangle.stack" : "magnifyingglass"
+    }
+
+    private var emptyStateTitle: String {
+        if isPermissionEmptyState { return L10n.screenRecordingRequiredTitle }
+        return viewModel.searchText.isEmpty ? L10n.noWindows : L10n.noResults
+    }
+
+    private var emptyStateHint: String {
+        if isPermissionEmptyState { return L10n.screenRecordingRequiredDescription }
+        return viewModel.searchText.isEmpty ? L10n.noWindowsHint : L10n.noResultsHint
+    }
+
     // MARK: - Bottom Bar
 
     private var bottomBar: some View {
-        ZStack {
-            HStack(spacing: 3) {
-                Text(L10n.isChinese ? "基于" : "Powered by")
-                    .font(.system(size: 10))
-                    .foregroundStyle(subtleText)
-                Text("Manus")
-                    .font(.system(size: 10, weight: .semibold))
+        HStack(spacing: 8) {
+            let items = viewModel.displayItems
+            if !items.isEmpty {
+                Label(L10n.itemCountText(viewModel.totalCount), systemImage: "rectangle.stack")
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(tertiaryText)
             }
 
-            HStack {
-                let items = viewModel.displayItems
-                if !items.isEmpty {
-                    Text("\(viewModel.totalCount)")
-                        .font(.system(size: 10, weight: .medium, design: .rounded))
-                        .foregroundStyle(tertiaryText)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(fillBg)
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                }
+            Spacer()
 
-                Spacer()
-
-                Button(action: { onOpenSettings() }) {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 12))
-                        .foregroundStyle(tertiaryText)
-                }
-                .buttonStyle(.plain)
+            HStack(spacing: 4) {
+                Text("esc")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .padding(.horizontal, 6)
+                    .frame(height: 18)
+                    .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(quietSurface))
+                Text(L10n.dismissAction)
+                    .font(.system(size: 10))
+                    .foregroundStyle(tertiaryText)
             }
+
+            Button(action: { onOpenSettings() }) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(tertiaryText)
+                    .frame(width: 24, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(L10n.settings)
+            .accessibilityLabel(L10n.settings)
         }
         .padding(.horizontal, 14)
         .padding(.top, 8)
@@ -431,14 +559,13 @@ struct SwitcherWindow: View {
 
     // MARK: - Actions
 
-    private func activateItem(_ item: SwitcherItem) {
-        viewModel.activate(item)
-        onDismiss()
-    }
-
-    private func activateWindow(_ window: WindowInfo) {
-        viewModel.activate(window: window)
-        onDismiss()
+    private func selectOrConfirm(_ item: SwitcherItem, at index: Int) {
+        viewModel.selectedIndex = index
+        if item.windows.count >= 2 {
+            viewModel.enterSecondary()
+        } else {
+            onConfirm()
+        }
     }
 }
 
@@ -447,12 +574,22 @@ struct SwitcherWindow: View {
 struct SwitcherResultsList: View {
     let items: [SwitcherItem]
     @Binding var selectedIndex: Int
-    let onSelect: (SwitcherItem) -> Void
+    let onSelect: (Int, SwitcherItem) -> Void
     let onHover: ((Int) -> Void)?
 
-    private var selectedBg: Color { Color(nsColor: .controlAccentColor) }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
+
     private var tertiaryText: Color { Color(nsColor: .tertiaryLabelColor) }
-    private var fillBg: Color { Color.primary.opacity(0.08) }
+    private var quietSurface: Color {
+        Color.primary.opacity(colorScheme == .dark ? 0.075 : 0.05)
+    }
+    private var selectedSurface: Color {
+        Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.085)
+    }
+    private var hairline: Color {
+        Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.11)
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -461,14 +598,14 @@ struct SwitcherResultsList: View {
                     ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                         resultItem(item: item, isSelected: index == selectedIndex, index: index)
                             .id(index)
-                            .onTapGesture { onSelect(item) }
+                            .onTapGesture { onSelect(index, item) }
                             .onHover { if $0 { onHover?(index) } }
                     }
                 }
-                .padding(.horizontal, 6)
+                .padding(.horizontal, 8)
             }
             .onChange(of: selectedIndex) { _, newValue in
-                withAnimation(.easeOut(duration: 0.1)) {
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.1)) {
                     proxy.scrollTo(newValue, anchor: .center)
                 }
             }
@@ -477,35 +614,39 @@ struct SwitcherResultsList: View {
 
     private func resultItem(item: SwitcherItem, isSelected: Bool, index: Int) -> some View {
         HStack(spacing: 10) {
+            Capsule()
+                .fill(isSelected ? Color.accentColor : Color.clear)
+                .frame(width: 3, height: 22)
+
             if let groupIcons = item.groupIcons {
-                GroupStackIcon(icons: groupIcons, size: 28)
+                GroupStackIcon(icons: groupIcons, size: 30)
             } else if let icon = item.icon {
                 Image(nsImage: icon)
                     .resizable()
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fit)
-                    .frame(width: 28, height: 28)
+                    .frame(width: 30, height: 30)
             } else {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isSelected ? Color.white.opacity(0.2) : fillBg)
-                    .frame(width: 28, height: 28)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(quietSurface)
+                    .frame(width: 30, height: 30)
                     .overlay(
                         Image(systemName: "app")
                             .font(.system(size: 14))
-                            .foregroundColor(isSelected ? .white : tertiaryText)
+                            .foregroundColor(tertiaryText)
                     )
             }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.displayName)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(isSelected ? .white : .primary)
+                    .foregroundColor(.primary)
                     .lineLimit(1)
 
                 if let subtitle = item.subtitle, !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.system(size: 11))
-                        .foregroundColor(isSelected ? .white.opacity(0.75) : .secondary)
+                        .foregroundColor(.secondary)
                         .lineLimit(1)
                 }
             }
@@ -516,26 +657,35 @@ struct SwitcherResultsList: View {
             if item.windows.count >= 2 {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(isSelected ? .white.opacity(0.8) : tertiaryText)
+                    .foregroundColor(tertiaryText)
             }
 
             // Badge: keyboard shortcut number for first 9 items
             if index < 9 {
                 Text("\(index + 1)")
                     .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundColor(isSelected ? .white : tertiaryText)
+                    .foregroundColor(isSelected ? .primary : tertiaryText)
                     .frame(width: 20, height: 20)
-                    .background(isSelected ? Color.white.opacity(0.2) : fillBg)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .background(quietSurface)
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.vertical, 8)
         .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(isSelected ? selectedBg : Color.clear)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(isSelected ? selectedSurface : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(isSelected ? hairline : Color.clear, lineWidth: 0.75)
         )
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(item.displayName)
+        .accessibilityValue(item.subtitle ?? L10n.windowCountText(item.windows.count))
+        .accessibilityHint(index < 9 ? L10n.quickSelectHint(index + 1) : L10n.activateItemHint)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -547,15 +697,6 @@ struct GroupStackIcon: View {
     let icons: [NSImage]
     let size: CGFloat
 
-    @Environment(\.colorScheme) private var colorScheme
-
-    private var backdrop: Color {
-        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
-    }
-    private var border: Color {
-        colorScheme == .dark ? Color.white.opacity(0.18) : Color.black.opacity(0.15)
-    }
-
     var body: some View {
         let shown = Array(icons.prefix(3))
         let iconSize = size * (shown.count == 1 ? 0.62 : 0.52)
@@ -564,20 +705,13 @@ struct GroupStackIcon: View {
         let start = -span / 2
 
         ZStack {
-            RoundedRectangle(cornerRadius: size * 0.18)
-                .fill(backdrop)
-                .overlay(
-                    RoundedRectangle(cornerRadius: size * 0.18)
-                        .strokeBorder(border, lineWidth: 1)
-                )
-
             ForEach(Array(shown.enumerated()), id: \.offset) { index, icon in
                 Image(nsImage: icon)
                     .resizable()
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fit)
                     .frame(width: iconSize, height: iconSize)
-                    .shadow(color: .black.opacity(0.25), radius: size * 0.03, x: 0, y: size * 0.015)
+                    .shadow(color: .black.opacity(0.18), radius: size * 0.025, x: 0, y: size * 0.012)
                     .offset(
                         x: start + step * CGFloat(index),
                         y: start + step * CGFloat(index)

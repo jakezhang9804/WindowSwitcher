@@ -2,6 +2,7 @@ name: Build and Package
 
 on:
   push:
+    branches: [master, main]
     tags:
       - 'v*'
   pull_request:
@@ -18,6 +19,8 @@ jobs:
     # macos-26 ships Xcode 26 (Swift 6.2+), required to parse the
     # PermissionFlow dependency manifest; macos-14 is deprecated
     runs-on: macos-26
+    outputs:
+      release_signed: ${{ steps.signing.outputs.enabled }}
 
     steps:
       - name: Checkout repository
@@ -31,11 +34,34 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
+      - name: Detect release signing configuration
+        id: signing
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [[ -n "$MACOS_CERTIFICATE" && -n "$MACOS_CERTIFICATE_PASSWORD" && -n "$KEYCHAIN_PASSWORD" \
+             && -n "$APPLE_ID" && -n "$APPLE_APP_SPECIFIC_PASSWORD" && -n "$APPLE_TEAM_ID" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              echo "::warning::Release signing secrets are incomplete; building ad-hoc artifacts and skipping the public GitHub Release."
+            fi
+          fi
+
+      - name: Run AppSwitcherKit tests
+        run: ./Scripts/test-appswitcherkit.sh
+
       - name: Build with Swift Package Manager
         run: |
           # Universal binary so the release runs on Apple Silicon and Intel
-          swift build -c release --arch arm64 --arch x86_64
-          echo "BIN_PATH=$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)" >> "$GITHUB_ENV"
+          swift build -c release --arch arm64 --arch x86_64 --disable-automatic-resolution
+          echo "BIN_PATH=$(swift build -c release --arch arm64 --arch x86_64 --disable-automatic-resolution --show-bin-path)" >> "$GITHUB_ENV"
 
       - name: Create App Bundle Structure
         run: |
@@ -46,8 +72,8 @@ jobs:
           # Copy executable
           cp "${BIN_PATH}/${{ env.PRODUCT_NAME }}" "$APP/Contents/MacOS/"
 
-          # Copy SwiftPM resource bundles (KeyboardShortcuts localizations, etc.)
-          # Without these, Bundle.module crashes the app at runtime
+          # Copy SwiftPM resource bundles used by package dependencies.
+          # Without these, Bundle.module can crash the app at runtime.
           find "${BIN_PATH}" -maxdepth 1 -name "*.bundle" -exec cp -R {} "$APP/Contents/Resources/" \;
 
           # Copy Info.plist
@@ -57,8 +83,9 @@ jobs:
           # released version (otherwise the update checker sees itself as outdated)
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/v}"
+            [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Release tag must be vMAJOR.MINOR.PATCH"; exit 1; }
             /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" "$APP/Contents/Info.plist"
-            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${VERSION}" "$APP/Contents/Info.plist"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${GITHUB_RUN_NUMBER}" "$APP/Contents/Info.plist"
             echo "Stamped version ${VERSION}"
           fi
 
@@ -88,15 +115,53 @@ jobs:
           find "$APP" -type f | head -30
           lipo -info "$APP/Contents/MacOS/${{ env.PRODUCT_NAME }}"
 
-      - name: Sign App (Ad-hoc)
+      - name: Import Developer ID certificate
+        if: startsWith(github.ref, 'refs/tags/v') && steps.signing.outputs.enabled == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
-          codesign --force --deep --sign - "artifacts/${{ env.PRODUCT_NAME }}.app"
+          : "${MACOS_CERTIFICATE:?Configure the MACOS_CERTIFICATE repository secret}"
+          : "${MACOS_CERTIFICATE_PASSWORD:?Configure the MACOS_CERTIFICATE_PASSWORD repository secret}"
+          : "${KEYCHAIN_PASSWORD:?Configure the KEYCHAIN_PASSWORD repository secret}"
+
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/window-switcher-signing.keychain-db"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)
+          [ -n "$IDENTITY" ] || { echo "No Developer ID Application identity found"; exit 1; }
+          echo "SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Sign App (Developer ID release)
+        if: startsWith(github.ref, 'refs/tags/v') && steps.signing.outputs.enabled == 'true'
+        run: |
+          codesign --force --deep --options runtime --timestamp \
+            --entitlements "WindowSwitcher/Resources/WindowSwitcher.entitlements" \
+            --sign "$SIGNING_IDENTITY" "artifacts/${{ env.PRODUCT_NAME }}.app"
+          codesign --verify --deep --strict --verbose=2 "artifacts/${{ env.PRODUCT_NAME }}.app"
+
+      - name: Sign App (Ad-hoc development artifact)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') || steps.signing.outputs.enabled != 'true' }}
+        run: |
+          codesign --force --deep --options runtime \
+            --entitlements "WindowSwitcher/Resources/WindowSwitcher.entitlements" \
+            --sign - "artifacts/${{ env.PRODUCT_NAME }}.app"
+          codesign --verify --deep --strict --verbose=2 "artifacts/${{ env.PRODUCT_NAME }}.app"
 
       - name: Create DMG
         run: |
           brew install create-dmg || true
 
-          create-dmg \
+          if ! create-dmg \
             --volname "${{ env.PRODUCT_NAME }}" \
             --window-pos 200 120 \
             --window-size 600 400 \
@@ -105,21 +170,49 @@ jobs:
             --hide-extension "${{ env.PRODUCT_NAME }}.app" \
             --app-drop-link 450 185 \
             "artifacts/${{ env.PRODUCT_NAME }}.dmg" \
-            "artifacts/${{ env.PRODUCT_NAME }}.app" || true
-
-          # Fallback
-          if [ ! -f "artifacts/${{ env.PRODUCT_NAME }}.dmg" ]; then
+            "artifacts/${{ env.PRODUCT_NAME }}.app"; then
+            rm -f "artifacts/${{ env.PRODUCT_NAME }}.dmg"
             hdiutil create -volname "${{ env.PRODUCT_NAME }}" \
               -srcfolder "artifacts/${{ env.PRODUCT_NAME }}.app" \
               -ov -format UDZO \
               "artifacts/${{ env.PRODUCT_NAME }}.dmg"
           fi
+          hdiutil verify "artifacts/${{ env.PRODUCT_NAME }}.dmg"
+
+      - name: Notarize and staple release artifacts
+        if: startsWith(github.ref, 'refs/tags/v') && steps.signing.outputs.enabled == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          : "${APPLE_ID:?Configure the APPLE_ID repository secret}"
+          : "${APPLE_APP_SPECIFIC_PASSWORD:?Configure the APPLE_APP_SPECIFIC_PASSWORD repository secret}"
+          : "${APPLE_TEAM_ID:?Configure the APPLE_TEAM_ID repository secret}"
+
+          APP="artifacts/${{ env.PRODUCT_NAME }}.app"
+          DMG="artifacts/${{ env.PRODUCT_NAME }}.dmg"
+          xcrun notarytool submit "$DMG" --wait \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID"
+          xcrun stapler staple "$APP"
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$APP"
+          xcrun stapler validate "$DMG"
+          spctl --assess --type execute --verbose=2 "$APP"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
 
       - name: Create ZIP Archive
         run: |
           # ditto preserves executable permissions and metadata,
           # unlike upload-artifact's own zipping
           ditto -c -k --keepParent "artifacts/${{ env.PRODUCT_NAME }}.app" "artifacts/${{ env.PRODUCT_NAME }}.zip"
+
+      - name: Create checksums
+        run: |
+          cd artifacts
+          shasum -a 256 "${{ env.PRODUCT_NAME }}.dmg" "${{ env.PRODUCT_NAME }}.zip" > SHA256SUMS.txt
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
@@ -135,11 +228,18 @@ jobs:
           path: artifacts/${{ env.PRODUCT_NAME }}.zip
           retention-days: 30
 
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PRODUCT_NAME }}-checksums
+          path: artifacts/SHA256SUMS.txt
+          retention-days: 30
+
   release:
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && needs.build.outputs.release_signed == 'true'
 
     permissions:
       contents: write
@@ -157,12 +257,18 @@ jobs:
           name: ${{ env.PRODUCT_NAME }}-zip
           path: artifacts
 
+      - name: Download checksums
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.PRODUCT_NAME }}-checksums
+          path: artifacts
+
       - name: Get version from tag
         id: version
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           name: Release v${{ steps.version.outputs.VERSION }}
           body: |
@@ -171,6 +277,9 @@ jobs:
             ### Downloads
             - **DMG**: For easy installation (drag to Applications)
             - **ZIP**: Portable version
+            - **SHA256SUMS.txt**: Integrity checks for both downloads
+
+            Both artifacts are Developer ID signed and notarized by Apple.
 
             ### System Requirements
             - macOS 14.0 or later
@@ -180,10 +289,11 @@ jobs:
             1. Download the DMG file
             2. Open the DMG
             3. Drag WindowSwitcher to Applications
-            4. Grant Accessibility permission when prompted
+            4. Open Settings → General and grant Accessibility and Screen Recording access
           files: |
             artifacts/${{ env.PRODUCT_NAME }}.dmg
             artifacts/${{ env.PRODUCT_NAME }}.zip
+            artifacts/SHA256SUMS.txt
           draft: false
           prerelease: false
         env:

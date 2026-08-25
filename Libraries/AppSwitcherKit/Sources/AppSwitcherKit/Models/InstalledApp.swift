@@ -1,4 +1,4 @@
-public struct InstalledApp: Hashable, Codable {
+public struct InstalledApp: Hashable, Codable, Sendable {
     public let bundleID: String
     public let displayName: String
     public let bundlePath: String
