@@ -1,6 +1,15 @@
 import SwiftUI
 import AppSwitcherKit
 
+protocol WindowServicing: AnyObject {
+    func getAllWindows() -> [WindowInfo]
+    func activateWindow(_ window: WindowInfo)
+    func activateInstalledApp(_ app: InstalledApp, completion: @escaping (Result<Void, Error>) -> Void)
+    func activateGroup(_ group: AppGroup)
+}
+
+extension WindowService: WindowServicing {}
+
 /// Represents a top-level switcher item — a single window, an app (aggregating
 /// its visible windows), or an app group (screen recording).
 enum SwitcherItem: Identifiable, Equatable, Hashable {
@@ -32,8 +41,8 @@ enum SwitcherItem: Identifiable, Equatable, Hashable {
         case .window(let w): return w.title.isEmpty ? nil : w.title
         case .appWindows(_, _, _, let windows):
             return windows.count > 1 ? L10n.windowCountText(windows.count) : windows.first?.title
-        case .application:
-            return L10n.launchApplication
+        case .application(let app, _):
+            return app.isBackgroundOnly ? L10n.openBackgroundUtility : L10n.launchApplication
         case .group(let g, _): return L10n.groupMembers(g.bundleIDs.count)
         }
     }
@@ -79,6 +88,11 @@ enum SwitcherItem: Identifiable, Equatable, Hashable {
         case .group(let group, _):
             return Set(group.bundleIDs.map { $0.lowercased() })
         }
+    }
+
+    var isBackgroundOnlyApplication: Bool {
+        if case .application(let app, _) = self { return app.isBackgroundOnly }
+        return false
     }
 
     static func == (lhs: SwitcherItem, rhs: SwitcherItem) -> Bool {
@@ -132,9 +146,9 @@ final class SwitcherViewModel: ObservableObject {
         return groupedBundleIDs.contains(bundleID.lowercased())
     }
 
-    /// Top-level display items: visible windows (flat) or per-app rows (byApp),
-    /// then app groups. A non-empty search also includes matching installed apps
-    /// that are not already represented by an open window.
+    /// Top-level display items ordered by persistent application MRU, with
+    /// WindowServer front-to-back rank as a stable fallback. Search merges open
+    /// items and installed apps through a relevance scorer.
     var displayItems: [SwitcherItem] {
         let baseWindows = windows.filter { !isGrouped($0.appBundleID) }
 
@@ -149,39 +163,77 @@ final class SwitcherViewModel: ObservableObject {
             .group(group, icons: group.bundleIDs.compactMap { Self.icon(forBundleID: $0) })
         }
 
-        // Place each group where its frontmost member appears in the WindowServer
-        // order instead of appending every group at the end of the MRU ring.
+        // Real application activation history wins. WindowServer order remains a
+        // tie-breaker for windows in one app and apps not yet in the MRU ring.
         let rankByWindowID = Dictionary(
             uniqueKeysWithValues: windows.enumerated().map { ($0.element.id, $0.offset) }
         )
         items = items.enumerated().sorted { lhs, rhs in
-            let leftRank = rank(of: lhs.element, rankByWindowID: rankByWindowID)
-            let rightRank = rank(of: rhs.element, rankByWindowID: rankByWindowID)
-            return leftRank == rightRank ? lhs.offset < rhs.offset : leftRank < rightRank
+            let leftMRU = effectiveMRURank(of: lhs.element)
+            let rightMRU = effectiveMRURank(of: rhs.element)
+            if leftMRU != rightMRU { return leftMRU < rightMRU }
+            let leftWindow = rank(of: lhs.element, rankByWindowID: rankByWindowID)
+            let rightWindow = rank(of: rhs.element, rankByWindowID: rankByWindowID)
+            return leftWindow == rightWindow ? lhs.offset < rhs.offset : leftWindow < rightWindow
         }.map(\.element)
 
-        let query = searchText.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return items }
-        let words = query.split(separator: " ").map(String.init)
-        let matchingOpenItems = items.filter { item in
-            let haystack = matchText(for: item)
-            return words.allSatisfy { word in haystack.contains { $0.contains(word) } }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let representedBundleIDs = items.reduce(into: Set<String>()) { result, item in
+            result.formUnion(item.representedBundleIDs)
         }
-
-        let representedBundleIDs = Set(baseWindows.compactMap { $0.appBundleID?.lowercased() })
-        let matchingApplications = installedApps.lazy
+        let availableApplications = installedApps
             .filter { !representedBundleIDs.contains($0.bundleID.lowercased()) }
             .filter { !self.isGrouped($0.bundleID) }
-            .filter { app in
-                let haystack = [app.displayName.lowercased(), app.bundleID.lowercased()]
-                return words.allSatisfy { word in haystack.contains { $0.contains(word) } }
-            }
-            .prefix(20)
-            .map { app in
-                SwitcherItem.application(app, icon: NSWorkspace.shared.icon(forFile: app.bundlePath))
-            }
 
-        return matchingOpenItems + matchingApplications
+        guard !query.isEmpty else {
+            guard isSearchActive else { return items }
+            let remaining = max(0, 40 - items.count)
+            let browsableApps = availableApplications.enumerated().sorted { lhs, rhs in
+                let leftRank = mruStore.rank(of: lhs.element.bundleID) ?? .max
+                let rightRank = mruStore.rank(of: rhs.element.bundleID) ?? .max
+                if leftRank != rightRank { return leftRank < rightRank }
+                return lhs.offset < rhs.offset
+            }.prefix(remaining)
+            return items + browsableApps.map { app in
+                .application(app.element, icon: Self.installedIcon(for: app.element))
+            }
+        }
+
+        let installedAppsByID = Dictionary(
+            uniqueKeysWithValues: installedApps.map { ($0.bundleID.lowercased(), $0) }
+        )
+        let openDocuments = items.enumerated().map { index, item in
+            let rank = effectiveMRURank(of: item)
+            return AppSearchDocument(
+                id: item.id,
+                primaryText: item.displayName,
+                secondaryTexts: searchTexts(for: item, installedAppsByID: installedAppsByID),
+                isRunning: !item.windows.isEmpty || item.groupIcons != nil,
+                isBackgroundOnly: item.isBackgroundOnlyApplication,
+                recencyRank: rank == .max ? nil : rank,
+                sourceOrder: index
+            )
+        }
+        let appDocuments = availableApplications.enumerated().map { index, app in
+            AppSearchDocument(
+                id: "application-\(app.bundleID)",
+                primaryText: app.displayName,
+                secondaryTexts: [app.bundleID] + app.searchAliases,
+                isRunning: false,
+                isBackgroundOnly: app.isBackgroundOnly,
+                recencyRank: mruStore.rank(of: app.bundleID),
+                sourceOrder: items.count + index
+            )
+        }
+        let itemByID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+        let appByID = Dictionary(uniqueKeysWithValues: availableApplications.map { ("application-\($0.bundleID)", $0) })
+        return AppSearchScorer.rankedMatches(query: query, documents: openDocuments + appDocuments)
+            .prefix(40)
+            .compactMap { match in
+                if let item = itemByID[match.id] { return item }
+                guard let app = appByID[match.id] else { return nil }
+                return .application(app, icon: Self.installedIcon(for: app))
+            }
     }
 
     /// Collapse windows into one row per app, preserving front-to-back order
@@ -205,16 +257,18 @@ final class SwitcherViewModel: ObservableObject {
         }
     }
 
-    private func matchText(for item: SwitcherItem) -> [String] {
+    private func searchTexts(for item: SwitcherItem, installedAppsByID: [String: InstalledApp]) -> [String] {
         switch item {
         case .window(let w):
-            return [w.appName.lowercased(), w.title.lowercased()]
-        case .appWindows(_, let name, _, let ws):
-            return [name.lowercased()] + ws.map { $0.title.lowercased() }
+            let app = w.appBundleID.flatMap { installedAppsByID[$0.lowercased()] }
+            return [w.title, w.appBundleID ?? ""] + (app?.searchAliases ?? [])
+        case .appWindows(let bundleID, _, _, let ws):
+            return [bundleID] + ws.map(\.title) + (installedAppsByID[bundleID.lowercased()]?.searchAliases ?? [])
         case .application(let app, _):
-            return [app.displayName.lowercased(), app.bundleID.lowercased()]
+            return [app.bundleID] + app.searchAliases
         case .group(let g, _):
-            return [g.name.lowercased()]
+            let members = g.bundleIDs.compactMap { installedAppsByID[$0.lowercased()] }
+            return g.bundleIDs + members.map(\.displayName) + members.flatMap(\.searchAliases)
         }
     }
 
@@ -233,6 +287,10 @@ final class SwitcherViewModel: ObservableObject {
                 return members.contains(bundleID)
             }?.offset ?? .max
         }
+    }
+
+    private func effectiveMRURank(of item: SwitcherItem) -> Int {
+        mruStore.bestRank(among: item.representedBundleIDs) ?? .max
     }
 
     var totalCount: Int { displayItems.count }
@@ -263,6 +321,12 @@ final class SwitcherViewModel: ObservableObject {
         return cache
     }()
 
+    private static let installedIconCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 200
+        return cache
+    }()
+
     private static func icon(forBundleID bundleID: String) -> NSImage? {
         let key = bundleID.lowercased() as NSString
         if let cached = groupIconCache.object(forKey: key) { return cached }
@@ -274,39 +338,85 @@ final class SwitcherViewModel: ObservableObject {
         return icon
     }
 
-    private let windowService: WindowService
-    private let settingsStore: UserDefaultsSwitcherSettingsStore
-    @Published private var installedApps: [InstalledApp] = []
-    private static var installedAppCache: [InstalledApp]?
-    private static var installedAppLoadTask: Task<[InstalledApp], Never>?
+    private static func installedIcon(for app: InstalledApp) -> NSImage? {
+        let key = app.bundleID.lowercased() as NSString
+        if let cached = installedIconCache.object(forKey: key) { return cached }
+        let icon = NSWorkspace.shared.icon(forFile: app.bundlePath)
+        installedIconCache.setObject(icon, forKey: key)
+        return icon
+    }
 
-    init(windowService: WindowService, settingsStore: UserDefaultsSwitcherSettingsStore = UserDefaultsSwitcherSettingsStore()) {
+    private let windowService: any WindowServicing
+    private let settingsStore: UserDefaultsSwitcherSettingsStore
+    private let mruStore: ApplicationMRUStore
+    @Published private var installedApps: [InstalledApp] = []
+    @Published private(set) var isAppCatalogLoading = false
+    private static var installedAppCache: [InstalledApp]?
+    private static var installedAppCacheDate: Date?
+    private static var installedAppLoadTask: Task<[InstalledApp], Never>?
+    private static var installedAppCacheGeneration = 0
+    private static let installedAppCacheTTL: TimeInterval = 300
+
+    init(
+        windowService: any WindowServicing,
+        settingsStore: UserDefaultsSwitcherSettingsStore = UserDefaultsSwitcherSettingsStore(),
+        mruStore: ApplicationMRUStore = ApplicationMRUStore(),
+        installedApps: [InstalledApp]? = nil
+    ) {
         self.windowService = windowService
         self.settingsStore = settingsStore
+        self.mruStore = mruStore
+        if let installedApps {
+            self.installedApps = installedApps
+            self.isAppCatalogLoading = false
+        } else {
+            preloadInstalledApps()
+        }
+    }
+
+    static func invalidateInstalledAppCache() {
+        installedAppCacheGeneration &+= 1
+        installedAppCache = nil
+        installedAppCacheDate = nil
+        installedAppLoadTask = nil
+        installedIconCache.removeAllObjects()
+    }
+
+    func reloadInstalledApps() {
+        Self.invalidateInstalledAppCache()
         preloadInstalledApps()
     }
 
     private func preloadInstalledApps() {
-        if let cached = Self.installedAppCache {
+        if let cached = Self.installedAppCache,
+           let date = Self.installedAppCacheDate,
+           Date().timeIntervalSince(date) < Self.installedAppCacheTTL {
             installedApps = cached
+            isAppCatalogLoading = false
             return
         }
 
+        isAppCatalogLoading = true
+        let generation = Self.installedAppCacheGeneration
         let task: Task<[InstalledApp], Never>
         if let existing = Self.installedAppLoadTask {
             task = existing
         } else {
+            let excludedBundleIDs = Set([Bundle.main.bundleIdentifier].compactMap { $0 })
             task = Task.detached(priority: .utility) {
-                InstalledAppCatalog().fetchInstalledApps()
+                InstalledAppCatalog(excludedBundleIDs: excludedBundleIDs).fetchInstalledApps()
             }
             Self.installedAppLoadTask = task
         }
 
         Task { [weak self] in
             let apps = await task.value
+            guard generation == Self.installedAppCacheGeneration else { return }
             Self.installedAppCache = apps
+            Self.installedAppCacheDate = Date()
             Self.installedAppLoadTask = nil
             self?.installedApps = apps
+            self?.isAppCatalogLoading = false
         }
     }
 
@@ -399,26 +509,39 @@ final class SwitcherViewModel: ObservableObject {
 
     /// Activate the current selection, resolving the secondary panel: a drilled-in
     /// window wins, otherwise the app's frontmost window / the group.
-    func activateResolvedSelection() {
+    func activateResolvedSelection(
+        completion: @escaping (_ displayName: String, _ result: Result<Void, Error>) -> Void = { _, _ in }
+    ) {
         guard let item = selectedItem else { return }
         if secondaryActive, expandedWindows.indices.contains(secondaryIndex) {
             windowService.activateWindow(expandedWindows[secondaryIndex])
+            completion(expandedWindows[secondaryIndex].appName, .success(()))
             return
         }
-        activate(item)
+        activate(item, completion: completion)
     }
 
     /// Activate a specific item (top-level tap or default action)
-    func activate(_ item: SwitcherItem) {
+    func activate(
+        _ item: SwitcherItem,
+        completion: @escaping (_ displayName: String, _ result: Result<Void, Error>) -> Void = { _, _ in }
+    ) {
         switch item {
         case .window(let window):
             windowService.activateWindow(window)
+            completion(item.displayName, .success(()))
         case .appWindows(_, _, _, let windows):
-            if let first = windows.first { windowService.activateWindow(first) }
+            if let first = windows.first {
+                windowService.activateWindow(first)
+                completion(item.displayName, .success(()))
+            }
         case .application(let app, _):
-            windowService.activateInstalledApp(app)
+            windowService.activateInstalledApp(app) { result in
+                DispatchQueue.main.async { completion(app.displayName, result) }
+            }
         case .group(let group, _):
             windowService.activateGroup(group)
+            completion(item.displayName, .success(()))
         }
     }
 

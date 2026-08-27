@@ -474,9 +474,15 @@ struct SwitcherWindow: View {
 
     private var emptyState: some View {
         VStack(spacing: 10) {
-            Image(systemName: emptyStateSymbol)
-                .font(.system(size: 28, weight: .light))
-                .foregroundColor(isPermissionEmptyState ? .orange : tertiaryText)
+            if isCatalogLoadingEmptyState {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(height: 28)
+            } else {
+                Image(systemName: emptyStateSymbol)
+                    .font(.system(size: 28, weight: .light))
+                    .foregroundColor(isPermissionEmptyState ? .orange : tertiaryText)
+            }
 
             Text(emptyStateTitle)
                 .font(.system(size: 13, weight: .medium))
@@ -502,17 +508,25 @@ struct SwitcherWindow: View {
         viewModel.searchText.isEmpty && !screenRecordingGranted
     }
 
+    private var isCatalogLoadingEmptyState: Bool {
+        viewModel.isSearchActive
+            && !viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && viewModel.isAppCatalogLoading
+    }
+
     private var emptyStateSymbol: String {
         if isPermissionEmptyState { return "exclamationmark.triangle" }
         return viewModel.searchText.isEmpty ? "rectangle.stack" : "magnifyingglass"
     }
 
     private var emptyStateTitle: String {
+        if isCatalogLoadingEmptyState { return L10n.loadingApplications }
         if isPermissionEmptyState { return L10n.screenRecordingRequiredTitle }
         return viewModel.searchText.isEmpty ? L10n.noWindows : L10n.noResults
     }
 
     private var emptyStateHint: String {
+        if isCatalogLoadingEmptyState { return L10n.loadingApplicationsHint }
         if isPermissionEmptyState { return L10n.screenRecordingRequiredDescription }
         return viewModel.searchText.isEmpty ? L10n.noWindowsHint : L10n.noResultsHint
     }

@@ -54,8 +54,8 @@ jobs:
             fi
           fi
 
-      - name: Run AppSwitcherKit tests
-        run: ./Scripts/test-appswitcherkit.sh
+      - name: Run all tests
+        run: ./Scripts/test-all.sh
 
       - name: Build with Swift Package Manager
         run: |

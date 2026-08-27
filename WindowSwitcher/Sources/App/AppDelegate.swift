@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import AppSwitcherKit
 import PermissionFlowScreenRecordingStatus
+import Darwin
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
@@ -16,6 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let windowService = WindowService()
     private let settingsStore = UserDefaultsSwitcherSettingsStore()
     private let hotkeyService = HotkeyService()
+    private let mruStore = ApplicationMRUStore()
+    private var appDirectorySources: [DispatchSourceFileSystemObject] = []
+    private var catalogRefreshWorkItem: DispatchWorkItem?
 
     /// Accessibility can be granted while the app is already running. Retry the
     /// event tap briefly so the hotkey starts working without a relaunch.
@@ -50,6 +54,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupStatusBarItem()
         setupGlobalHotkey()
+        setupWorkspaceObservers()
+        setupApplicationDirectoryMonitoring()
 
         // CGEventTap enables Cmd+Tab takeover and reliable modifier-release
         // detection. It shares the Accessibility permission already required
@@ -101,6 +107,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: Notification.Name("com.windowswitcher.debug.showSwitcher"),
             object: nil
         )
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(showSearchDebug(_:)),
+            name: Notification.Name("com.windowswitcher.debug.showSearch"),
+            object: nil
+        )
 
         // Start automatic update checks
         UpdateService.shared.startAutomaticChecks()
@@ -111,6 +123,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         permissionRetryTimer?.invalidate()
         permissionRetryTimer = nil
+        catalogRefreshWorkItem?.cancel()
+        appDirectorySources.forEach { $0.cancel() }
+        appDirectorySources.removeAll()
         hotkeyService.stopEventTap()
         hotkeyService.switcherDidHide()
         UpdateService.shared.stopAutomaticChecks()
@@ -119,6 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.settingsWindowCloseObserver = nil
         }
         NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         DistributedNotificationCenter.default().removeObserver(self)
     }
 
@@ -136,6 +152,100 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
         true
+    }
+
+    @objc private func showSearchDebug(_ notification: Notification) {
+        showSwitcherAction()
+        let query = notification.object as? String
+            ?? notification.userInfo?["query"] as? String
+            ?? UserDefaults.standard.string(forKey: "debugSearchQuery")
+            ?? ""
+        DispatchQueue.main.async { [weak self] in
+            self?.switcherViewModel?.isSearchActive = true
+            self?.switcherViewModel?.searchText = query
+        }
+    }
+
+    private func setupWorkspaceObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        center.addObserver(
+            self,
+            selector: #selector(workspaceApplicationActivated(_:)),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil
+        )
+        for name in [
+            NSWorkspace.didLaunchApplicationNotification,
+            NSWorkspace.didTerminateApplicationNotification,
+            NSWorkspace.didMountNotification,
+            NSWorkspace.didUnmountNotification
+        ] {
+            center.addObserver(
+                self,
+                selector: #selector(workspaceCatalogChanged(_:)),
+                name: name,
+                object: nil
+            )
+        }
+    }
+
+    @objc private func workspaceApplicationActivated(_ notification: Notification) {
+        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              let bundleID = app.bundleIdentifier,
+              bundleID.caseInsensitiveCompare(Bundle.main.bundleIdentifier ?? "") != .orderedSame else {
+            return
+        }
+        mruStore.record(bundleID: bundleID)
+    }
+
+    @objc private func workspaceCatalogChanged(_ notification: Notification) {
+        scheduleCatalogRefresh(rebuildMonitors: notification.name == NSWorkspace.didMountNotification
+            || notification.name == NSWorkspace.didUnmountNotification)
+    }
+
+    private func setupApplicationDirectoryMonitoring() {
+        appDirectorySources.forEach { $0.cancel() }
+        appDirectorySources.removeAll()
+
+        var roots = InstalledAppCatalog.defaultSearchRoots.filter { $0.pathExtension.lowercased() != "app" }
+        roots.append(FileManager.default.homeDirectoryForCurrentUser)
+        var watched = Set<String>()
+        for root in roots where watched.insert(root.standardizedFileURL.path).inserted {
+            let descriptor = Darwin.open(root.path, O_EVTONLY)
+            guard descriptor >= 0 else { continue }
+            let source = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: descriptor,
+                eventMask: [.write, .delete, .rename, .attrib, .extend, .link, .revoke],
+                queue: .main
+            )
+            source.setEventHandler { [weak self] in
+                self?.scheduleCatalogRefresh(rebuildMonitors: true)
+            }
+            source.setCancelHandler {
+                Darwin.close(descriptor)
+            }
+            source.resume()
+            appDirectorySources.append(source)
+        }
+    }
+
+    private func scheduleCatalogRefresh(rebuildMonitors: Bool) {
+        catalogRefreshWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            Task { @MainActor in
+                if let switcherViewModel = self.switcherViewModel {
+                    switcherViewModel.reloadInstalledApps()
+                } else {
+                    SwitcherViewModel.invalidateInstalledAppCache()
+                }
+            }
+            if rebuildMonitors {
+                self.setupApplicationDirectoryMonitoring()
+            }
+        }
+        catalogRefreshWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     // MARK: - Status Bar
@@ -361,13 +471,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let frontmost = NSWorkspace.shared.frontmostApplication
         if frontmost?.bundleIdentifier != Bundle.main.bundleIdentifier {
             previousFrontmostApplication = frontmost
+            if let bundleID = frontmost?.bundleIdentifier {
+                mruStore.record(bundleID: bundleID)
+            }
         }
 
         // Create a shared view model so HotkeyService can drive Tab cycling
         let vm = MainActor.assumeIsolated {
             SwitcherViewModel(
                 windowService: windowService,
-                settingsStore: settingsStore
+                settingsStore: settingsStore,
+                mruStore: mruStore
             )
         }
         self.switcherViewModel = vm
@@ -572,10 +686,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             // 2) Activate the resolved target only after no switcher window or
             // input monitor can race to reclaim focus.
+            let returnApplication = previousFrontmostApplication
             previousFrontmostApplication = nil
-            viewModel.activateResolvedSelection()
+            viewModel.activateResolvedSelection { [weak self] displayName, result in
+                guard case .failure(let error) = result else { return }
+                self?.presentLaunchFailure(
+                    displayName: displayName,
+                    error: error,
+                    returnApplication: returnApplication
+                )
+            }
             isConfirming = false
             NSLog("[WS] Switcher hidden (after confirm)")
+        }
+    }
+
+    private func presentLaunchFailure(
+        displayName: String,
+        error: Error,
+        returnApplication: NSRunningApplication?
+    ) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L10n.launchFailedTitle
+        let reason = (error as? LocalizedError)?.errorDescription
+            ?? error.localizedDescription
+        alert.informativeText = L10n.launchFailedMessage(
+            displayName,
+            reason.isEmpty ? L10n.launchFailedUnknownReason : reason
+        )
+        alert.addButton(withTitle: L10n.ok)
+        alert.runModal()
+        if let returnApplication, !returnApplication.isTerminated {
+            returnApplication.activate()
         }
     }
 

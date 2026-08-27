@@ -31,6 +31,14 @@ enum L10n {
     static let openSettings = isChinese ? "打开设置" : "Open Settings"
     static let drillHint = isChinese ? "查看窗口" : "Windows"
     static let launchApplication = isChinese ? "启动应用" : "Launch application"
+    static let openBackgroundUtility = isChinese ? "打开后台工具" : "Open background utility"
+    static let loadingApplications = isChinese ? "正在载入应用…" : "Loading applications..."
+    static let loadingApplicationsHint = isChinese ? "首次搜索可能需要一点时间" : "The first search may take a moment"
+    static let launchFailedTitle = isChinese ? "无法打开应用" : "Couldn’t open application"
+    static func launchFailedMessage(_ name: String, _ reason: String) -> String {
+        isChinese ? "无法打开“\(name)”：\(reason)" : "Couldn’t open \"\(name)\": \(reason)"
+    }
+    static let launchFailedUnknownReason = isChinese ? "应用不可用或系统拒绝了请求" : "The application is unavailable or macOS rejected the request"
     static let back = isChinese ? "返回" : "Back"
     static let clearSearch = isChinese ? "清除搜索" : "Clear search"
     static let searchWindowsAndApps = isChinese ? "搜索窗口和应用" : "Search windows and apps"
@@ -76,6 +84,7 @@ enum L10n {
         ? "将使用该分组绑定显示器上的当前应用和主窗口位置替换现有录制。"
         : "The current apps and primary-window positions on this group’s display will replace the existing recording."
     static let cancel = isChinese ? "取消" : "Cancel"
+    static let ok = isChinese ? "确定" : "OK"
     static let saveFailedTitle = isChinese ? "保存失败" : "Couldn’t save changes"
     static let displayUnavailable = isChinese ? "显示器已断开" : "Display unavailable"
     static func groupRecordedApps(_ count: Int) -> String {

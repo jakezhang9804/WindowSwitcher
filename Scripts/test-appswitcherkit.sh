@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PACKAGE_DIR="$ROOT_DIR/Libraries/AppSwitcherKit"
+PACKAGE_DIR="${1:-$ROOT_DIR/Libraries/AppSwitcherKit}"
 DEVELOPER_ROOT="${DEVELOPER_DIR:-$(xcode-select -p)}"
 TESTING_FRAMEWORKS="$DEVELOPER_ROOT/Library/Developer/Frameworks"
 TESTING_LIBRARIES="$DEVELOPER_ROOT/Library/Developer/usr/lib"

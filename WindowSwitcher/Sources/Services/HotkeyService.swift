@@ -1,4 +1,5 @@
 import AppKit
+import AppSwitcherKit
 
 /// Hotkey service that implements proper Option+Tab window switching behavior:
 ///
@@ -414,34 +415,35 @@ final class HotkeyService {
 
         // Enter (keyCode 36)
         if keyCode == 36 {
-            if searchActive {
-                // Let the focused TextField and input method handle Return. Its
-                // onSubmit callback confirms only after marked text is committed.
+            switch SearchKeyboardPolicy.action(for: .enter, searchActive: searchActive) {
+            case .passToTextField:
                 return false
-            } else {
-                // Search is not active → activate search bar
+            case .activateSearch:
                 NSLog("[WS][Hotkey] Enter pressed — activating search")
                 DispatchQueue.main.async { [weak self] in
                     self?.activateSearchHandler?()
                 }
+                return true
+            default:
+                return true
             }
-            return true
         }
 
         // Escape (keyCode 53)
         if keyCode == 53 {
-            if searchActive {
-                // Search is active → deactivate search
+            switch SearchKeyboardPolicy.action(for: .escape, searchActive: searchActive) {
+            case .deactivateSearch:
                 NSLog("[WS][Hotkey] Escape pressed — deactivating search")
                 DispatchQueue.main.async { [weak self] in
                     self?.deactivateSearchHandler?()
                 }
-            } else {
-                // Search is not active → dismiss panel
+            case .deferToHierarchy:
                 NSLog("[WS][Hotkey] Escape pressed — dismissing")
                 DispatchQueue.main.async { [weak self] in
                     self?.escapeHandler?()
                 }
+            default:
+                break
             }
             return true
         }

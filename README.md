@@ -26,7 +26,9 @@
 
 **Native Switcher Look** — With the Center panel position, the switcher appears as a horizontal icon strip in the middle of the screen, mirroring the native macOS Cmd+Tab switcher — with number badges for quick select and a caption naming the selected window. Left/Right positions show a vertical list panel at the screen edge.
 
-**Global App Search** — Type to search not only open windows but also all installed applications on your system. Open windows are prioritized at the top, with matching installed apps listed below. Select any app to launch it instantly.
+**Global App Search** — Search open windows, window groups, and installed applications — including Finder, Safari, CoreServices apps, user applications, and applications on mounted volumes. Ranking understands exact names, prefixes, substrings, fuzzy matches, bundle IDs, aliases, Pinyin, and Pinyin initials. Press Enter on a result to switch, launch, or restore it.
+
+**Persistent App MRU** — Ordering combines actual application activation history with WindowServer front-to-back order, so switching remains predictable across Spaces, minimized windows, and app relaunches.
 
 **Window Groups** — Record the applications and primary-window positions on a display as a workspace. Activating a group launches missing apps, restores saved geometry, and focuses the first member. Display bindings use stable display UUIDs so monitor reordering does not silently redirect a group.
 
@@ -128,8 +130,8 @@ cd WindowSwitcher
 # Build with Swift Package Manager
 swift build -c release
 
-# Run the local library test suite
-./Scripts/test-appswitcherkit.sh
+# Run the AppSwitcherKit and main application test suites
+./Scripts/test-all.sh
 
 # Run the debug build
 swift run WindowSwitcher

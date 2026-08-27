@@ -39,6 +39,20 @@ private enum PrivateWindowAPI {
 /// kCPSUserGenerated — treat the fronting as user-initiated
 private let kSLPSUserGenerated: UInt32 = 0x200
 
+enum InstalledAppLaunchError: LocalizedError {
+    case applicationUnavailable
+    case launchRejected
+
+    var errorDescription: String? {
+        switch self {
+        case .applicationUnavailable:
+            return L10n.isChinese ? "应用已被移动或删除" : "The application was moved or deleted"
+        case .launchRejected:
+            return L10n.launchFailedUnknownReason
+        }
+    }
+}
+
 final class WindowService {
 
     /// Invalidates delayed launch/reopen callbacks from older group activations.
@@ -241,7 +255,10 @@ final class WindowService {
     /// Launch an installed application selected from global search. Resolve the
     /// path captured by the catalog first, then fall back to Launch Services in
     /// case the app moved after the catalog was built.
-    func activateInstalledApp(_ app: InstalledApp) {
+    func activateInstalledApp(
+        _ app: InstalledApp,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
         cancelPendingGroupActivation()
         let recordedURL = URL(fileURLWithPath: app.bundlePath)
         let url: URL?
@@ -253,14 +270,20 @@ final class WindowService {
 
         guard let url else {
             NSLog("[WS] activateInstalledApp: app no longer available (\(app.bundleID))")
+            completion(.failure(InstalledAppLaunchError.applicationUnavailable))
             return
         }
 
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
-        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { launchedApp, error in
             if let error {
                 NSLog("[WS] activateInstalledApp failed for \(app.bundleID): \(error.localizedDescription)")
+                completion(.failure(error))
+            } else if launchedApp == nil {
+                completion(.failure(InstalledAppLaunchError.launchRejected))
+            } else {
+                completion(.success(()))
             }
         }
     }

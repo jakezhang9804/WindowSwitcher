@@ -22,6 +22,11 @@ let package = Package(
                 .product(name: "PermissionFlowScreenRecordingStatus", package: "PermissionFlow")
             ],
             path: "WindowSwitcher/Sources"
+        ),
+        .testTarget(
+            name: "WindowSwitcherTests",
+            dependencies: ["WindowSwitcher", "AppSwitcherKit"],
+            path: "WindowSwitcher/Tests"
         )
     ]
 )
